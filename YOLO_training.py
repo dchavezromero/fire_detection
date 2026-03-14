@@ -17,14 +17,14 @@ def main():
     # model.train(data="training_datasets/Fire And Smoke 5.v1i.yolo26/data.yaml", epochs=5, imgsz=640, device=0)
 
     # YOLO v26l
-    model = YOLO("yolo26l.pt")  # downloads pretrained large model automatically
+    model = YOLO("yolov8m.pt")  # downloads pretrained large model automatically
 
     model.train(
-    data="training_datasets/Fire And Smoke 5.v1i.yolo26/data.yaml",
+    data="training_datasets/Fire And Smoke 5.v1i.yolov8/data.yaml",
     epochs=200,
     patience=50,
     imgsz=640,
-    batch=20,
+    batch=40,
     device=0
     )
 
@@ -50,7 +50,7 @@ def main():
         args = yaml.safe_load(f)
 
     model_name = Path(args["model"]).stem          # e.g. "yolov26m" or "yolov8m"
-    version = model_name.replace("yolo", "v")       # e.g. "v26m" or "v8m"
+    version = model_name.replace("yolo", "")       # e.g. "26m" or "v8m"
     imgsz = args["imgsz"]
     epochs = args["epochs"]
     folder_name = f"{version}_{imgsz}imgsz_{epochs}epochs"
