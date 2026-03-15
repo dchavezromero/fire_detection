@@ -17,14 +17,14 @@ def main():
     # model.train(data="training_datasets/Fire And Smoke 5.v1i.yolo26/data.yaml", epochs=5, imgsz=640, device=0)
 
     # YOLO v26l
-    model = YOLO("yolov8m.pt")  # downloads pretrained large model automatically
+    model = YOLO("yolo26m.pt")  # downloads pretrained large model automatically
 
     model.train(
-    data="training_datasets/Fire And Smoke 5.v1i.yolov8/data.yaml",
+    data="training_datasets/Fire And Smoke 5.v1i.yolo26/data.yaml",
     epochs=200,
     patience=50,
-    imgsz=640,
-    batch=40,
+    imgsz=1280,
+    batch=6,
     device=0
     )
 
