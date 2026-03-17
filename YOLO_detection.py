@@ -1,6 +1,6 @@
 from ultralytics import YOLO
 
-model = YOLO("models/v26l_640imgsz_200epochs/weights/best.pt") # choose model to use from models folders
+model = YOLO("models/26m_1280imgsz_200epochs/weights/best.pt") # choose model to use from models folders
 
 results = model.predict(
     source="sample_videos/fire2.mp4",
