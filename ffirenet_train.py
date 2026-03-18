@@ -43,9 +43,9 @@ NOFIRE_DIR = "training_datasets/custom_ffirenet_data/nofire"
 OUTPUT_DIR = "./ffirenet_results"
 
 # --- Paper hyperparameters (Table 5) ---
-IMG_SIZE = 224
-EPOCHS = 5
-BATCH_SIZE = 256
+IMG_SIZE = 460
+EPOCHS = 50
+BATCH_SIZE = 64
 LEARNING_RATE = 0.01
 SEED = 42
 NUM_WORKERS = 4  # dataloader workers, set to 0 if you get multiprocessing errors
