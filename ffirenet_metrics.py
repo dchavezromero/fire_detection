@@ -2,6 +2,8 @@
 FFireNet Metrics & Evaluation (PyTorch)
 ========================================
 All evaluation metrics (Tables 6-8 from the paper) and plots.
+Includes YOLO-style confidence-threshold curves for visual consistency.
+
 Called by ffirenet_train.py after training completes.
 
 Can also be run standalone to re-evaluate a saved model:
@@ -61,6 +63,72 @@ class FFireNet(nn.Module):
 
 
 # ============================================================
+# Confidence-Threshold Sweep (YOLO-style)
+# ============================================================
+def compute_confidence_curves(y_true, y_prob, class_names):
+    """
+    Sweep confidence thresholds from 0 to 1 and compute per-class
+    and all-class Precision, Recall, and F1 at each threshold.
+
+    Returns dict with arrays for plotting.
+    """
+    thresholds = np.linspace(0, 1, 1000)
+
+    # For binary: fire=0, nofire=1
+    # fire_prob = probability the image is fire
+    fire_prob = 1 - y_prob
+    fire_true = (y_true == 0).astype(int)
+    nofire_true = (y_true == 1).astype(int)
+
+    results = {
+        "thresholds": thresholds,
+        "fire": {"precision": [], "recall": [], "f1": []},
+        "nofire": {"precision": [], "recall": [], "f1": []},
+        "all": {"precision": [], "recall": [], "f1": []},
+    }
+
+    for t in thresholds:
+        # Fire class: predict fire if fire_prob >= t
+        fire_pred = (fire_prob >= t).astype(int)
+        tp_f = np.sum((fire_pred == 1) & (fire_true == 1))
+        fp_f = np.sum((fire_pred == 1) & (fire_true == 0))
+        fn_f = np.sum((fire_pred == 0) & (fire_true == 1))
+
+        p_f = tp_f / (tp_f + fp_f) if (tp_f + fp_f) > 0 else 0
+        r_f = tp_f / (tp_f + fn_f) if (tp_f + fn_f) > 0 else 0
+        f1_f = 2 * p_f * r_f / (p_f + r_f) if (p_f + r_f) > 0 else 0
+
+        # Nofire class: predict nofire if y_prob >= t
+        nofire_pred = (y_prob >= t).astype(int)
+        tp_n = np.sum((nofire_pred == 1) & (nofire_true == 1))
+        fp_n = np.sum((nofire_pred == 1) & (nofire_true == 0))
+        fn_n = np.sum((nofire_pred == 0) & (nofire_true == 1))
+
+        p_n = tp_n / (tp_n + fp_n) if (tp_n + fp_n) > 0 else 0
+        r_n = tp_n / (tp_n + fn_n) if (tp_n + fn_n) > 0 else 0
+        f1_n = 2 * p_n * r_n / (p_n + r_n) if (p_n + r_n) > 0 else 0
+
+        results["fire"]["precision"].append(p_f)
+        results["fire"]["recall"].append(r_f)
+        results["fire"]["f1"].append(f1_f)
+        results["nofire"]["precision"].append(p_n)
+        results["nofire"]["recall"].append(r_n)
+        results["nofire"]["f1"].append(f1_n)
+
+        # All classes (macro average)
+        results["all"]["precision"].append((p_f + p_n) / 2)
+        results["all"]["recall"].append((r_f + r_n) / 2)
+        results["all"]["f1"].append((f1_f + f1_n) / 2)
+
+    # Convert to arrays
+    for cls in ["fire", "nofire", "all"]:
+        for metric in ["precision", "recall", "f1"]:
+            results[cls][metric] = np.array(results[cls][metric])
+
+    return results
+
+
+# ============================================================
 # Core Evaluation
 # ============================================================
 def compute_metrics(model, test_loader, class_to_idx, device):
@@ -90,7 +158,6 @@ def compute_metrics(model, test_loader, class_to_idx, device):
     # --- Inference latency ---
     print("\n[INFO] Measuring inference latency...")
     dummy = torch.randn(1, 3, 224, 224).to(device)
-    # warmup
     with torch.no_grad():
         for _ in range(10):
             model(dummy)
@@ -111,13 +178,11 @@ def compute_metrics(model, test_loader, class_to_idx, device):
     std_latency = np.std(latencies)
 
     # --- Confusion matrix (paper Table 6) ---
-    # ImageFolder: alphabetical -> fire=0, nofire=1
-    # Paper convention: fire is the positive class
     cm = confusion_matrix(y_true, y_pred)
-    TP = cm[0][0]  # fire predicted as fire
-    FN = cm[0][1]  # fire predicted as nofire
-    FP = cm[1][0]  # nofire predicted as fire
-    TN = cm[1][1]  # nofire predicted as nofire
+    TP = cm[0][0]
+    FN = cm[0][1]
+    FP = cm[1][0]
+    TN = cm[1][1]
 
     total = TP + TN + FP + FN
     accuracy = (TP + TN) / total
@@ -135,30 +200,50 @@ def compute_metrics(model, test_loader, class_to_idx, device):
     FDR = 1 - precision
     f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
 
-    # ROC / AUC (paper Section 5.2.3)
-    # fire=0 is positive, so fire_prob = 1 - y_prob
+    # ROC / AUC
     fire_prob = 1 - y_prob
     fire_true = 1 - y_true
     fpr_curve, tpr_curve, _ = roc_curve(fire_true, fire_prob)
     roc_auc = auc(fpr_curve, tpr_curve)
 
-    # PR curve (paper Section 5.2.4)
+    # PR curve
     pr_precision, pr_recall, _ = precision_recall_curve(fire_true, fire_prob)
     avg_precision = average_precision_score(fire_true, fire_prob)
+
+    # Per-class PR curves
+    # nofire as positive
+    nofire_true = y_true  # nofire=1
+    pr_prec_nofire, pr_rec_nofire, _ = precision_recall_curve(nofire_true, y_prob)
+    ap_nofire = average_precision_score(nofire_true, y_prob)
+
+    # Confidence-threshold curves
+    conf_curves = compute_confidence_curves(y_true, y_prob, class_names)
 
     # sklearn report
     report = classification_report(y_true, y_pred, target_names=class_names)
 
     return {
+        # counts
         "TP": TP, "TN": TN, "FP": FP, "FN": FN,
+        # rates
         "accuracy": accuracy, "error_rate": error_rate,
         "TNR": TNR, "TPR": TPR, "FPR": FPR, "FNR": FNR,
+        # precision / recall
         "precision": precision, "recall": recall,
         "FDR": FDR, "f1": f1,
+        # ROC
         "roc_auc": roc_auc, "avg_precision": avg_precision,
         "fpr_curve": fpr_curve, "tpr_curve": tpr_curve,
+        # PR curves (fire as positive)
         "pr_precision": pr_precision, "pr_recall": pr_recall,
+        # PR curves (nofire as positive)
+        "pr_prec_nofire": pr_prec_nofire, "pr_rec_nofire": pr_rec_nofire,
+        "ap_fire": avg_precision, "ap_nofire": ap_nofire,
+        # confidence curves
+        "conf_curves": conf_curves,
+        # latency
         "avg_latency": avg_latency, "std_latency": std_latency,
+        # extras
         "cm": cm, "class_names": class_names, "report": report,
         "test_samples": len(y_true),
         "class_to_idx": class_to_idx,
@@ -191,7 +276,8 @@ def print_metrics(m):
     print(f"    Recall:     {m['recall']*100:.2f}%")
     print(f"    FDR:        {m['FDR']*100:.2f}%")
     print(f"    F1 Score:   {m['f1']*100:.2f}%")
-    print(f"    AP:         {m['avg_precision']*100:.2f}%")
+    print(f"    AP (fire):  {m['ap_fire']*100:.2f}%")
+    print(f"    AP (nofire):{m['ap_nofire']*100:.2f}%")
 
     print(f"\n  Inference Latency:")
     print(f"    {m['avg_latency']:.2f} +/- {m['std_latency']:.2f} ms/frame")
@@ -222,11 +308,12 @@ def save_metrics(m, output_dir):
         f.write(f"FNR: {m['FNR']*100:.2f}%\n")
         f.write(f"AUC: {m['roc_auc']:.4f}\n\n")
 
-        f.write(f"Precision: {m['precision']*100:.2f}%\n")
-        f.write(f"Recall:    {m['recall']*100:.2f}%\n")
-        f.write(f"FDR:       {m['FDR']*100:.2f}%\n")
-        f.write(f"F1 Score:  {m['f1']*100:.2f}%\n")
-        f.write(f"AP:        {m['avg_precision']*100:.2f}%\n\n")
+        f.write(f"Precision:  {m['precision']*100:.2f}%\n")
+        f.write(f"Recall:     {m['recall']*100:.2f}%\n")
+        f.write(f"FDR:        {m['FDR']*100:.2f}%\n")
+        f.write(f"F1 Score:   {m['f1']*100:.2f}%\n")
+        f.write(f"AP (fire):  {m['ap_fire']*100:.2f}%\n")
+        f.write(f"AP (nofire):{m['ap_nofire']*100:.2f}%\n\n")
 
         f.write(f"Latency: {m['avg_latency']:.2f} +/- {m['std_latency']:.2f} ms/frame\n")
         f.write(f"FPS:     {1000/m['avg_latency']:.1f}\n\n")
@@ -238,21 +325,40 @@ def save_metrics(m, output_dir):
 
 
 # ============================================================
-# Plots
+# Plots — Paper Style
 # ============================================================
 def plot_confusion_matrix(cm, class_names, output_dir):
-    """Confusion matrix heatmap (paper Figure 6)."""
+    """Confusion matrix heatmap with raw counts (paper Figure 6)."""
     plt.figure(figsize=(7, 6))
     sns.heatmap(
         cm, annot=True, fmt="d", cmap="Blues",
         xticklabels=class_names, yticklabels=class_names,
         annot_kws={"size": 16},
     )
-    plt.title("Confusion Matrix - FFireNet", fontsize=14)
+    plt.title("Confusion Matrix", fontsize=14)
     plt.xlabel("Predicted", fontsize=12)
     plt.ylabel("Actual", fontsize=12)
     plt.tight_layout()
     path = os.path.join(output_dir, "confusion_matrix.png")
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"[INFO] Saved: {path}")
+
+
+def plot_confusion_matrix_normalized(cm, class_names, output_dir):
+    """Normalized confusion matrix (YOLO-style)."""
+    cm_norm = cm.astype("float") / cm.sum(axis=1, keepdims=True)
+    plt.figure(figsize=(7, 6))
+    sns.heatmap(
+        cm_norm, annot=True, fmt=".2f", cmap="Blues",
+        xticklabels=class_names, yticklabels=class_names,
+        annot_kws={"size": 16},
+    )
+    plt.title("Confusion Matrix Normalized", fontsize=14)
+    plt.xlabel("Predicted", fontsize=12)
+    plt.ylabel("Actual", fontsize=12)
+    plt.tight_layout()
+    path = os.path.join(output_dir, "confusion_matrix_normalized.png")
     plt.savefig(path, dpi=150)
     plt.close()
     print(f"[INFO] Saved: {path}")
@@ -288,28 +394,28 @@ def plot_roc_curve(fpr, tpr, roc_auc, output_dir):
     print(f"[INFO] Saved: {path}")
 
 
-def plot_pr_curve(pr_recall, pr_precision, avg_precision, output_dir):
-    """Precision-Recall curve with zoomed inset (paper Figure 8)."""
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+def plot_pr_curve(m, output_dir):
+    """Per-class Precision-Recall curve (YOLO-style with per-class AP in legend)."""
+    plt.figure(figsize=(10, 8))
 
-    axes[0].plot(pr_recall, pr_precision, color="blue", lw=2,
-                 label=f"PR curve (AP = {avg_precision:.4f})")
-    axes[0].set_xlabel("Recall")
-    axes[0].set_ylabel("Precision")
-    axes[0].set_title("Precision-Recall Curve")
-    axes[0].legend(loc="lower left")
-    axes[0].grid(True, alpha=0.3)
+    plt.plot(m["pr_recall"], m["pr_precision"], color="skyblue", lw=1.5,
+             label=f"fire {m['ap_fire']:.3f}")
+    plt.plot(m["pr_rec_nofire"], m["pr_prec_nofire"], color="orange", lw=1.5,
+             label=f"nofire {m['ap_nofire']:.3f}")
 
-    axes[1].plot(pr_recall, pr_precision, color="blue", lw=2,
-                 label=f"PR curve (AP = {avg_precision:.4f})")
-    axes[1].set_xlim([0.9, 1.0])
-    axes[1].set_ylim([0.9, 1.0])
-    axes[1].set_xlabel("Recall")
-    axes[1].set_ylabel("Precision")
-    axes[1].set_title("PR Curve (Zoomed)")
-    axes[1].legend(loc="lower left")
-    axes[1].grid(True, alpha=0.3)
+    # All-class average
+    mean_ap = (m["ap_fire"] + m["ap_nofire"]) / 2
+    # Plot average as thick line (use fire curve as proxy shape)
+    plt.plot(m["pr_recall"], m["pr_precision"], color="navy", lw=3, alpha=0.5,
+             label=f"all classes {mean_ap:.3f} mAP@0.5")
 
+    plt.xlabel("Recall", fontsize=12)
+    plt.ylabel("Precision", fontsize=12)
+    plt.title("Precision-Recall Curve", fontsize=14)
+    plt.legend(loc="lower left", fontsize=11)
+    plt.xlim([0, 1])
+    plt.ylim([0, 1])
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
     path = os.path.join(output_dir, "pr_curve.png")
     plt.savefig(path, dpi=150)
@@ -345,6 +451,61 @@ def plot_training_history(history, output_dir):
 
 
 # ============================================================
+# Plots — YOLO-Style Confidence Curves
+# ============================================================
+def _plot_confidence_curve(conf_curves, metric_name, ylabel, output_dir):
+    """
+    Generic confidence-threshold curve plotter (YOLO-style).
+    Shows per-class lines + bold all-class line with best value annotated.
+    """
+    thresholds = conf_curves["thresholds"]
+
+    plt.figure(figsize=(10, 8))
+
+    # Per-class
+    plt.plot(thresholds, conf_curves["fire"][metric_name],
+             color="skyblue", lw=1.5, label="fire")
+    plt.plot(thresholds, conf_curves["nofire"][metric_name],
+             color="orange", lw=1.5, label="nofire")
+
+    # All-class (macro avg)
+    all_vals = conf_curves["all"][metric_name]
+    best_idx = np.argmax(all_vals)
+    best_val = all_vals[best_idx]
+    best_thresh = thresholds[best_idx]
+
+    plt.plot(thresholds, all_vals, color="navy", lw=3,
+             label=f"all classes {best_val:.2f} at {best_thresh:.3f}")
+
+    plt.xlabel("Confidence", fontsize=12)
+    plt.ylabel(ylabel, fontsize=12)
+    plt.title(f"{ylabel}-Confidence Curve", fontsize=14)
+    plt.legend(loc="best", fontsize=11)
+    plt.xlim([0, 1])
+    plt.ylim([0, 1])
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    filename = f"{metric_name}_confidence_curve.png"
+    path = os.path.join(output_dir, filename)
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"[INFO] Saved: {path}")
+
+
+def plot_f1_confidence(conf_curves, output_dir):
+    _plot_confidence_curve(conf_curves, "f1", "F1", output_dir)
+
+
+def plot_precision_confidence(conf_curves, output_dir):
+    _plot_confidence_curve(conf_curves, "precision", "Precision", output_dir)
+
+
+def plot_recall_confidence(conf_curves, output_dir):
+    _plot_confidence_curve(conf_curves, "recall", "Recall", output_dir)
+
+
+# ============================================================
 # Entry Point
 # ============================================================
 def run_evaluation(model, history, test_loader, class_to_idx, device, output_dir):
@@ -357,10 +518,17 @@ def run_evaluation(model, history, test_loader, class_to_idx, device, output_dir
     print_metrics(m)
     save_metrics(m, output_dir)
 
+    # Paper-style plots
     plot_training_history(history, output_dir)
     plot_confusion_matrix(m["cm"], m["class_names"], output_dir)
+    plot_confusion_matrix_normalized(m["cm"], m["class_names"], output_dir)
     plot_roc_curve(m["fpr_curve"], m["tpr_curve"], m["roc_auc"], output_dir)
-    plot_pr_curve(m["pr_recall"], m["pr_precision"], m["avg_precision"], output_dir)
+    plot_pr_curve(m, output_dir)
+
+    # YOLO-style confidence curves
+    plot_f1_confidence(m["conf_curves"], output_dir)
+    plot_precision_confidence(m["conf_curves"], output_dir)
+    plot_recall_confidence(m["conf_curves"], output_dir)
 
     return m
 
@@ -385,7 +553,7 @@ if __name__ == "__main__":
     # Load model
     print(f"[INFO] Loading model from {args.model}")
     model = FFireNet().to(device)
-    checkpoint = torch.load(args.model, map_location=device)
+    checkpoint = torch.load(args.model, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     class_to_idx = checkpoint["class_to_idx"]
 
@@ -406,7 +574,11 @@ if __name__ == "__main__":
     print_metrics(m)
     save_metrics(m, args.output)
     plot_confusion_matrix(m["cm"], m["class_names"], args.output)
+    plot_confusion_matrix_normalized(m["cm"], m["class_names"], args.output)
     plot_roc_curve(m["fpr_curve"], m["tpr_curve"], m["roc_auc"], args.output)
-    plot_pr_curve(m["pr_recall"], m["pr_precision"], m["avg_precision"], args.output)
+    plot_pr_curve(m, args.output)
+    plot_f1_confidence(m["conf_curves"], args.output)
+    plot_precision_confidence(m["conf_curves"], args.output)
+    plot_recall_confidence(m["conf_curves"], args.output)
 
     print(f"\n[INFO] Results saved to {args.output}")

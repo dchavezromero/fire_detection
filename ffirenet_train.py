@@ -38,12 +38,13 @@ from ffirenet_metrics import run_evaluation
 # ============================================================
 
 # --- Paths ---
-FIRE_DIR = "training_datasets/custom_ffirenet_data/fire"
-NOFIRE_DIR = "training_datasets/custom_ffirenet_data/nofire"
-OUTPUT_DIR = "./ffirenet_results"
+DATASET_DIR = "training_datasets/custom_ffirenet_data"
+FIRE_DIR = os.path.join(DATASET_DIR, "fire")
+NOFIRE_DIR = os.path.join(DATASET_DIR, "nofire")
+OUTPUT_DIR = "./models"
 
 # --- Paper hyperparameters (Table 5) ---
-IMG_SIZE = 460
+IMG_SIZE = 224
 EPOCHS = 50
 BATCH_SIZE = 64
 LEARNING_RATE = 0.01
@@ -320,8 +321,17 @@ def train(model, train_loader, val_loader, device):
 # ============================================================
 def main():
     # --- Setup ---
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(OUTPUT_DIR, f"run_{timestamp}")
+    folder_name = f"mobilenet_v2_{IMG_SIZE}imgsz_{EPOCHS}epochs_{LEARNING_RATE}lr"
+
+    run_dir = os.path.join(OUTPUT_DIR, folder_name)
+
+    # Handle duplicate names
+    counter = 2
+    base_run_dir = run_dir
+    while os.path.exists(run_dir):
+        run_dir = f"{base_run_dir}_{counter}"
+        counter += 1
+
     os.makedirs(run_dir, exist_ok=True)
     print(f"[INFO] Results will be saved to: {run_dir}")
 
@@ -348,7 +358,7 @@ def main():
             print(f"  Removed {removed} corrupt files from {d}")
 
     # --- Split dataset ---
-    split_dir = create_splits(FIRE_DIR, NOFIRE_DIR, OUTPUT_DIR)
+    split_dir = create_splits(FIRE_DIR, NOFIRE_DIR, DATASET_DIR)
 
     # --- Data loaders ---
     train_loader, val_loader, test_loader, test_dataset = create_dataloaders(split_dir)
