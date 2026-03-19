@@ -19,8 +19,8 @@ from torchvision import transforms, models
 # Configuration
 # ============================================================
 
-MODEL_PATH = "models/mobilenet_v2_224imgsz_50epochs_0.01lr/ffirenet.pth"  # TODO: set your model path
-VIDEO_PATH = "sample_videos/nofire2.mp4"                        # TODO: set your video path
+MODEL_PATH = "models/mobilenet_v2_460imgsz_200epochs_0.01lr/ffirenet.pth"  # TODO: set your model path
+VIDEO_PATH = "sample_videos/fire2.mp4"                        # TODO: set your video path
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

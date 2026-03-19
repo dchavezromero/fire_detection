@@ -38,14 +38,15 @@ from ffirenet_metrics import run_evaluation
 # ============================================================
 
 # --- Paths ---
+# DATASET_DIR = "training_datasets/forest_fire_dataset_original"
 DATASET_DIR = "training_datasets/custom_ffirenet_data"
 FIRE_DIR = os.path.join(DATASET_DIR, "fire")
 NOFIRE_DIR = os.path.join(DATASET_DIR, "nofire")
 OUTPUT_DIR = "./models"
 
 # --- Paper hyperparameters (Table 5) ---
-IMG_SIZE = 224
-EPOCHS = 50
+IMG_SIZE = 460
+EPOCHS = 200
 BATCH_SIZE = 64
 LEARNING_RATE = 0.01
 SEED = 42
