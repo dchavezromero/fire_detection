@@ -45,8 +45,8 @@ NOFIRE_DIR = os.path.join(DATASET_DIR, "nofire")
 OUTPUT_DIR = "./models"
 
 # --- Paper hyperparameters (Table 5) ---
-IMG_SIZE = 460
-EPOCHS = 200
+IMG_SIZE = 640
+EPOCHS = 100
 BATCH_SIZE = 64
 LEARNING_RATE = 0.01
 SEED = 42
