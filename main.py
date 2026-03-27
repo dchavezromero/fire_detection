@@ -284,14 +284,14 @@ if __name__ == "__main__":
         # --- Paths (edit these) ---
         ffirenet_model_path="models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth",
         yolo_model_path="models/26m_1280imgsz_200epochs/weights/best.pt",
-        video_path="sample_videos/fire1.mp4",
+        video_path="sample_videos/nofire1.mp4",
 
         # --- Tune these ---
-        gate_thresh=0.4,
-        gate_frames=30,
+        gate_thresh=0.8,
+        gate_frames=60,
         yolo_conf=0.3,
         conviction_rise=0.15,
-        conviction_decay=0.08,
+        conviction_decay=0.3,
         flicker_penalty=0.10,
         alert_conviction=0.60,
         clear_conviction=0.20,
