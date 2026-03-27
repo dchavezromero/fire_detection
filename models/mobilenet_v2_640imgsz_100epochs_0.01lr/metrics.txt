@@ -1,0 +1,35 @@
+FFireNet Evaluation Results
+==================================================
+Date: 2026-03-20 11:07:15
+Test samples: 1299
+Class mapping: {'fire': 0, 'nofire': 1}
+
+TP=658, TN=607, FP=5, FN=29
+Accuracy:   97.38%
+Error Rate: 2.62%
+
+TNR: 99.18%
+TPR: 95.78%
+FPR: 0.82%
+FNR: 4.22%
+AUC: 0.9989
+
+Precision:  99.25%
+Recall:     95.78%
+FDR:        0.75%
+F1 Score:   97.48%
+AP (fire):  99.90%
+AP (nofire):99.89%
+
+Latency: 2.89 +/- 0.65 ms/frame
+FPS:     345.6
+
+Classification Report:
+              precision    recall  f1-score   support
+
+        fire       0.99      0.96      0.97       687
+      nofire       0.95      0.99      0.97       612
+
+    accuracy                           0.97      1299
+   macro avg       0.97      0.97      0.97      1299
+weighted avg       0.97      0.97      0.97      1299
