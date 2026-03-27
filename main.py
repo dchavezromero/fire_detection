@@ -1,69 +1,27 @@
 """
 Fire Detection Pipeline
 ========================
-Two-stage fire detection combining FFireNet (binary classifier) and
-YOLOv8 (object detector) with cross-correlation and temporal smoothing.
-
-Stage 1: FFireNet classifies each frame (fire / no-fire probability).
-Stage 2: YOLO runs conditionally based on FFireNet confidence.
-Stage 3: Cross-correlation resolves disagreements between models.
-Stage 4: Temporal smoothing over a rolling window prevents flickering.
+Two-stage fire detection: FFireNet acts as a lightweight gate that trips
+on possible fire. Once tripped, YOLO26 takes over for a configurable
+number of frames to localize and confirm. Conviction tracking on YOLO's
+output drives the final fire alert.
 
 Usage:
-    python fire_pipeline.py
+    python main.py
 """
 
+import re
 import cv2
 import time
 import torch
 import torch.nn as nn
 import numpy as np
-from collections import deque
-from dataclasses import dataclass, field
 from torchvision import transforms, models
 from ultralytics import YOLO
 
-
-# ============================================================
-# Pipeline Configuration
-# ============================================================
-@dataclass
-class PipelineConfig:
-    """All tunable thresholds in one place."""
-
-    # --- Paths ---
-    ffirenet_model_path: str = "models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth"
-    yolo_model_path: str = "models/26m_1280imgsz_200epochs/weights/best.pt"
-    video_path: str = "sample_videos/fire3.mp4"
-
-    # --- FFireNet gating thresholds ---
-    # FFireNet sigmoid output: 0.0 = fire, 1.0 = no fire
-    # Frames below ffirenet_fire_thresh    -> high confidence fire
-    # Frames above ffirenet_nofire_thresh  -> high confidence no fire
-    # Frames in between                   -> uncertain, always run YOLO
-    ffirenet_fire_thresh: float = 0.3      # below this = confident fire
-    ffirenet_nofire_thresh: float = 0.7    # above this = confident no fire
-
-    # --- YOLO settings ---
-    yolo_conf: float = 0.3                 # base YOLO confidence threshold
-    yolo_recheck_conf: float = 0.15        # lower threshold when cross-checking disagreements
-    yolo_device: int = 0                   # GPU device (0) or "cpu"
-
-    # --- Cross-correlation weights ---
-    # Final frame score = (w_ffirenet * ffirenet_score) + (w_yolo * yolo_score)
-    # Both scores normalized to 0.0 = no fire, 1.0 = fire
-    w_ffirenet: float = 0.4
-    w_yolo: float = 0.6
-
-    # --- Temporal smoothing ---
-    window_size: int = 8                   # rolling window frame count
-    alert_threshold: float = 0.55          # fused score above this = fire alert
-    min_frames_for_alert: int = 4          # need at least N frames in window above threshold
-
-    # --- Display ---
-    show_display: bool = True
-    save_output: bool = False
-    output_path: str = "output_pipeline.mp4"
+from config import PipelineConfig
+from fusion import ConvictionTracker
+from display import draw_overlay
 
 
 # ============================================================
@@ -92,15 +50,46 @@ class FFireNet(nn.Module):
 
 
 # ============================================================
-# Preprocessing (must match FFireNet training)
+# Utilities
 # ============================================================
-ffirenet_preprocess = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-])
+def parse_imgsz(model_path: str) -> int:
+    """
+    Extract image size from the FFireNet model folder name.
+
+    Expected pattern: mobilenet_v2_{N}imgsz_...
+    Examples:
+        models/mobilenet_v2_224imgsz_50epochs_0.01lr/ffirenet.pth  -> 224
+        models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth -> 640
+    """
+    match = re.search(r"(\d+)imgsz", model_path)
+    if not match:
+        raise ValueError(
+            f"Cannot parse image size from model path: {model_path}\n"
+            f"Expected folder name containing '<N>imgsz' (e.g. '640imgsz')"
+        )
+    size = int(match.group(1))
+    print(f"[PIPELINE] Parsed FFireNet image size: {size}x{size}")
+    return size
+
+
+def build_ffirenet_preprocess(img_size: int) -> transforms.Compose:
+    """Build the preprocessing transform matching FFireNet training."""
+    return transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+
+def load_ffirenet(model_path: str, device: torch.device) -> FFireNet:
+    """Load a trained FFireNet from checkpoint."""
+    model = FFireNet().to(device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    return model
 
 
 # ============================================================
@@ -111,11 +100,10 @@ class FireDetectionPipeline:
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Load FFireNet
-        self.ffirenet = FFireNet().to(self.device)
-        checkpoint = torch.load(cfg.ffirenet_model_path, map_location=self.device, weights_only=False)
-        self.ffirenet.load_state_dict(checkpoint["model_state_dict"])
-        self.ffirenet.eval()
+        # Load FFireNet + infer preprocessing from path
+        self.ffirenet = load_ffirenet(cfg.ffirenet_model_path, self.device)
+        img_size = parse_imgsz(cfg.ffirenet_model_path)
+        self.ffirenet_preprocess = build_ffirenet_preprocess(img_size)
         print(f"[PIPELINE] FFireNet loaded from {cfg.ffirenet_model_path}")
 
         # Load YOLO
@@ -123,40 +111,34 @@ class FireDetectionPipeline:
         print(f"[PIPELINE] YOLO loaded from {cfg.yolo_model_path}")
         print(f"[PIPELINE] Device: {self.device}")
 
-        # Temporal smoothing buffer: stores per-frame fused scores
-        self.score_window = deque(maxlen=cfg.window_size)
+        # Conviction tracker (driven by YOLO)
+        self.tracker = ConvictionTracker(cfg)
+
+        # Gate state
+        self.gate_countdown = 0  # frames remaining with YOLO active
 
         # Stats
-        self.stats = {
-            "total_frames": 0,
-            "yolo_runs": 0,
-            "alerts": 0,
-        }
+        self.stats = {"total_frames": 0, "yolo_runs": 0, "alerts": 0}
 
     # ----------------------------------------------------------
-    # Stage 1: FFireNet inference
+    # FFireNet inference
     # ----------------------------------------------------------
     def run_ffirenet(self, frame_rgb: np.ndarray) -> float:
-        """Returns fire probability (0 = no fire, 1 = fire)."""
-        tensor = ffirenet_preprocess(frame_rgb).unsqueeze(0).to(self.device)
+        """Returns raw sigmoid (0 = fire, 1 = no fire)."""
+        tensor = self.ffirenet_preprocess(frame_rgb).unsqueeze(0).to(self.device)
         with torch.no_grad():
             logit = self.ffirenet(tensor).squeeze()
             prob = torch.sigmoid(logit).item()
-        # FFireNet: prob close to 0 = fire, close to 1 = nofire
-        # Invert so our score means: 1.0 = fire, 0.0 = no fire
-        return 1.0 - prob
+        return prob
 
     # ----------------------------------------------------------
-    # Stage 2: YOLO inference (conditional)
+    # YOLO inference
     # ----------------------------------------------------------
-    def run_yolo(self, frame, conf: float) -> tuple[list, float]:
-        """
-        Returns (detections_list, yolo_fire_score).
-        yolo_fire_score: 0.0 = nothing found, scales up with count & confidence.
-        """
+    def run_yolo(self, frame) -> tuple[list, float]:
+        """Returns (detections, yolo_fire_score)."""
         results = self.yolo.predict(
             source=frame,
-            conf=conf,
+            conf=self.cfg.yolo_conf,
             show=False,
             save=False,
             device=self.cfg.yolo_device,
@@ -176,10 +158,9 @@ class FireDetectionPipeline:
                     "class_id": cls_id,
                 })
 
-        # YOLO fire score: combine detection count and max confidence
         if detections:
             max_conf = max(d["confidence"] for d in detections)
-            count_factor = min(len(detections) / 3.0, 1.0)  # saturates at 3 detections
+            count_factor = min(len(detections) / 3.0, 1.0)
             yolo_score = 0.5 * max_conf + 0.5 * count_factor
         else:
             yolo_score = 0.0
@@ -187,143 +168,58 @@ class FireDetectionPipeline:
         return detections, yolo_score
 
     # ----------------------------------------------------------
-    # Stage 3: Cross-correlation & fusion
-    # ----------------------------------------------------------
-    def fuse_scores(
-        self,
-        ffirenet_score: float,
-        yolo_score: float | None,
-        yolo_ran: bool,
-    ) -> float:
-        """
-        Combine model outputs into a single fire score [0, 1].
-        If YOLO didn't run, rely on FFireNet alone.
-        """
-        if not yolo_ran or yolo_score is None:
-            return ffirenet_score
-
-        fused = (self.cfg.w_ffirenet * ffirenet_score) + (self.cfg.w_yolo * yolo_score)
-
-        # Disagreement penalty: if models strongly disagree, dampen confidence
-        disagreement = abs(ffirenet_score - yolo_score)
-        if disagreement > 0.5:
-            # Pull score toward 0.5 (uncertain) proportionally to disagreement
-            penalty = 0.2 * (disagreement - 0.5)
-            fused = fused * (1 - penalty) + 0.5 * penalty
-
-        return np.clip(fused, 0.0, 1.0)
-
-    # ----------------------------------------------------------
-    # Stage 4: Temporal smoothing
-    # ----------------------------------------------------------
-    def temporal_decision(self, fused_score: float) -> tuple[bool, float]:
-        """
-        Push score into rolling window. Returns (fire_alert, smoothed_score).
-        """
-        self.score_window.append(fused_score)
-
-        if len(self.score_window) < 2:
-            return False, fused_score
-
-        smoothed = np.mean(self.score_window)
-        frames_above = sum(1 for s in self.score_window if s > self.cfg.alert_threshold)
-        alert = (smoothed > self.cfg.alert_threshold) and (frames_above >= self.cfg.min_frames_for_alert)
-
-        return alert, smoothed
-
-    # ----------------------------------------------------------
     # Process single frame
     # ----------------------------------------------------------
     def process_frame(self, frame) -> dict:
-        """Full pipeline for one frame. Returns info dict."""
+        """Full pipeline for one frame."""
         self.stats["total_frames"] += 1
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Stage 1: FFireNet
-        ffirenet_score = self.run_ffirenet(frame_rgb)
+        # Always run FFireNet (cheap)
+        ffirenet_sigmoid = self.run_ffirenet(frame_rgb)
 
-        # Stage 2: Decide whether to run YOLO
+        # Check if FFireNet trips the gate
+        if ffirenet_sigmoid < self.cfg.gate_thresh:
+            self.gate_countdown = self.cfg.gate_frames
+
+        # Run YOLO if gate is open
         yolo_ran = False
-        yolo_score = None
+        yolo_score = 0.0
         detections = []
+        gate_open = self.gate_countdown > 0
 
-        if ffirenet_score > (1.0 - self.cfg.ffirenet_fire_thresh):
-            # High confidence fire -> run YOLO at normal conf to localize
-            detections, yolo_score = self.run_yolo(frame, self.cfg.yolo_conf)
+        if gate_open:
+            detections, yolo_score = self.run_yolo(frame)
             yolo_ran = True
+            has_detections = len(detections) > 0
 
-        elif ffirenet_score > (1.0 - self.cfg.ffirenet_nofire_thresh):
-            # Uncertain zone -> run YOLO to help decide
-            detections, yolo_score = self.run_yolo(frame, self.cfg.yolo_conf)
-            yolo_ran = True
+            # YOLO finding fire resets the countdown
+            if has_detections:
+                self.gate_countdown = self.cfg.gate_frames
+            else:
+                self.gate_countdown -= 1
 
+            # Update conviction based on YOLO results
+            alert, conviction = self.tracker.update(yolo_score, has_detections)
         else:
-            # High confidence no fire -> but occasionally spot-check
-            # Run YOLO every 30 frames as a safety net
-            if self.stats["total_frames"] % 30 == 0:
-                detections, yolo_score = self.run_yolo(frame, self.cfg.yolo_recheck_conf)
-                yolo_ran = True
+            # Gate closed — no YOLO, conviction just decays
+            alert, conviction = self.tracker.update(0.0, False)
+            self.gate_countdown = 0
 
-                # If YOLO finds something FFireNet missed, flag it
-                if yolo_score > 0.3:
-                    ffirenet_score = max(ffirenet_score, 0.5)  # bump FFireNet up
-
-        # Stage 3: Fuse
-        fused_score = self.fuse_scores(ffirenet_score, yolo_score, yolo_ran)
-
-        # Stage 4: Temporal
-        alert, smoothed = self.temporal_decision(fused_score)
         if alert:
             self.stats["alerts"] += 1
 
         return {
-            "ffirenet_score": ffirenet_score,
+            "ffirenet_score": ffirenet_sigmoid,
+            "gate_open": gate_open,
+            "gate_remaining": self.gate_countdown,
             "yolo_score": yolo_score,
             "yolo_ran": yolo_ran,
             "detections": detections,
-            "fused_score": fused_score,
-            "smoothed_score": smoothed,
+            "conviction": conviction,
+            "streak": self.tracker.streak,
             "alert": alert,
         }
-
-    # ----------------------------------------------------------
-    # Drawing
-    # ----------------------------------------------------------
-    def draw_overlay(self, frame, info: dict, dt_ms: float):
-        h, w = frame.shape[:2]
-
-        # YOLO bounding boxes
-        for det in info["detections"]:
-            x1, y1, x2, y2 = det["bbox"]
-            conf = det["confidence"]
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(frame, f"fire {conf:.0%}", (x1, y1 - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
-
-        # Alert banner
-        if info["alert"]:
-            cv2.rectangle(frame, (0, 0), (w, 60), (0, 0, 180), -1)
-            cv2.putText(frame, "FIRE ALERT", (w // 2 - 120, 42),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3, cv2.LINE_AA)
-
-        # Scores panel (bottom-left)
-        panel_y = h - 130
-        cv2.rectangle(frame, (0, panel_y), (340, h), (0, 0, 0), -1)
-
-        lines = [
-            f"FFireNet: {info['ffirenet_score']:.2f}",
-            f"YOLO:     {info['yolo_score']:.2f}" if info["yolo_ran"] else "YOLO:     skipped",
-            f"Fused:    {info['fused_score']:.2f}",
-            f"Smoothed: {info['smoothed_score']:.2f}",
-            f"{dt_ms:.0f}ms | YOLO calls: {self.stats['yolo_runs']}",
-        ]
-
-        for i, line in enumerate(lines):
-            color = (0, 255, 0) if info["smoothed_score"] < self.cfg.alert_threshold else (0, 0, 255)
-            cv2.putText(frame, line, (10, panel_y + 22 + i * 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
-
-        return frame
 
     # ----------------------------------------------------------
     # Run on video
@@ -356,7 +252,7 @@ class FireDetectionPipeline:
             info = self.process_frame(frame)
             dt_ms = (time.perf_counter() - t0) * 1000
 
-            frame = self.draw_overlay(frame, info, dt_ms)
+            frame = draw_overlay(frame, info, self.stats, self.cfg, dt_ms)
 
             if writer:
                 writer.write(frame)
@@ -388,18 +284,17 @@ if __name__ == "__main__":
         # --- Paths (edit these) ---
         ffirenet_model_path="models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth",
         yolo_model_path="models/26m_1280imgsz_200epochs/weights/best.pt",
-        video_path="sample_videos/fire4.mp4",
+        video_path="sample_videos/fire1.mp4",
 
         # --- Tune these ---
-        ffirenet_fire_thresh=0.3,
-        ffirenet_nofire_thresh=0.7,
+        gate_thresh=0.4,
+        gate_frames=30,
         yolo_conf=0.3,
-        yolo_recheck_conf=0.15,
-        w_ffirenet=0.4,
-        w_yolo=0.6,
-        window_size=8,
-        alert_threshold=0.55,
-        min_frames_for_alert=4,
+        conviction_rise=0.15,
+        conviction_decay=0.08,
+        flicker_penalty=0.10,
+        alert_conviction=0.60,
+        clear_conviction=0.20,
     )
 
     pipeline = FireDetectionPipeline(cfg)
