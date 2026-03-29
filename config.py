@@ -2,7 +2,7 @@
 Pipeline configuration — all tunable thresholds in one place.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -11,6 +11,10 @@ class PipelineConfig:
     ffirenet_model_path: str = "models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth"
     yolo_model_path: str = "models/26m_1280imgsz_200epochs/weights/best.pt"
     video_path: str = "sample_videos/fire3.mp4"
+
+    # --- YOLO class mapping ---
+    # Class IDs from training: 0 = smoke, 1 = fire
+    class_names: dict = field(default_factory=lambda: {0: "smoke", 1: "fire"})
 
     # --- FFireNet gate ---
     # FFireNet sigmoid: 0.0 = fire, 1.0 = no fire

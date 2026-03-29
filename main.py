@@ -152,18 +152,28 @@ class FireDetectionPipeline:
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                 det_conf = box.conf[0].item()
                 cls_id = int(box.cls[0].item())
+                cls_name = self.cfg.class_names.get(cls_id, f"class_{cls_id}")
                 detections.append({
                     "bbox": (int(x1), int(y1), int(x2), int(y2)),
                     "confidence": det_conf,
                     "class_id": cls_id,
+                    "class_name": cls_name,
                 })
 
-        if detections:
-            max_conf = max(d["confidence"] for d in detections)
-            count_factor = min(len(detections) / 3.0, 1.0)
-            yolo_score = 0.5 * max_conf + 0.5 * count_factor
-        else:
-            yolo_score = 0.0
+        # Score based on fire detections (smoke detections contribute less)
+        fire_dets = [d for d in detections if d["class_name"] == "fire"]
+        smoke_dets = [d for d in detections if d["class_name"] == "smoke"]
+
+        score = 0.0
+        if fire_dets:
+            max_fire_conf = max(d["confidence"] for d in fire_dets)
+            fire_count = min(len(fire_dets) / 3.0, 1.0)
+            score += 0.5 * max_fire_conf + 0.3 * fire_count
+        if smoke_dets:
+            max_smoke_conf = max(d["confidence"] for d in smoke_dets)
+            score += 0.2 * max_smoke_conf  # smoke is a weaker signal
+
+        yolo_score = min(score, 1.0)
 
         return detections, yolo_score
 
@@ -284,7 +294,7 @@ if __name__ == "__main__":
         # --- Paths (edit these) ---
         ffirenet_model_path="models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth",
         yolo_model_path="models/26m_1280imgsz_200epochs/weights/best.pt",
-        video_path="sample_videos/nofire1.mp4",
+        video_path="sample_videos/fire2.mp4",
 
         # --- Tune these ---
         gate_thresh=0.8,
