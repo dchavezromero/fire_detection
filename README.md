@@ -16,14 +16,15 @@ Every frame → FFireNet (fire/no-fire sigmoid)
                   │                              │
                   │                    ┌─────────┴──────────┐
                   │                    │                     │
-                  │              Fire found            No fire found
-                  │              Reset countdown       Countdown ticks down
+                  │              Fire/smoke found       Nothing found
+                  │              Reset countdown        Countdown ticks down
                   │                    │                     │
                   │                    ▼                     ▼
-                  │              Conviction rises     Conviction decays
-                  │                                         │
-                  │                                   Countdown hits 0?
-                  │                                   Close gate
+                  │              Conviction rises      Conviction decays
+                  │              (fire weighted         (aggressive: 0.30)
+                  │               heavier than smoke)        │
+                  │                                    Countdown hits 0?
+                  │                                    Close gate
                   │
                   └─ sigmoid >= gate_thresh → Gate stays closed
                                               Conviction decays passively
@@ -33,15 +34,19 @@ Every frame → FFireNet (fire/no-fire sigmoid)
 
 FFireNet is not used for scoring — it's purely a trigger. Its sigmoid output is compared against a single threshold (`gate_thresh`). Below it, the gate opens and YOLO activates for `gate_frames` frames. If YOLO keeps finding fire, the countdown resets each time, keeping the gate open indefinitely. Once YOLO stops finding fire, the countdown ticks down and the gate closes.
 
+### Class-Aware Scoring
+ 
+YOLO detections are split by class and scored separately. Fire detections are the primary signal, contributing peak confidence (×0.5) and a count density factor (×0.3). Smoke detections add a weaker boost (×0.2 of peak smoke confidence). This means smoke alone builds conviction slower than fire, reducing false alerts from non-fire smoke while still allowing smoke to corroborate fire detections.
+
 ### Conviction Tracking
 
 While the gate is open, YOLO's detections drive the conviction tracker:
-
+ 
 - **YOLO finding fire raises conviction.** The rise accelerates with streak length — sustained detections build conviction faster than isolated ones.
-- **YOLO finding nothing decays conviction.**
+- **YOLO finding nothing decays conviction.** Decay (0.30) is aggressive to ensure conviction drops quickly when fire disappears.
 - **Flickering is penalized.** Each detection↔no-detection transition applies a flat penalty, so rapid flickering actively erodes conviction.
 - **Hysteresis prevents alert flickering.** The alert triggers at `alert_conviction` (default `0.60`) but doesn't clear until conviction drops to `clear_conviction` (default `0.20`).
-
+ 
 When the gate is closed, conviction simply decays — no YOLO runs, no compute wasted.
 
 ### Auto Image Size
@@ -117,9 +122,9 @@ All thresholds live in `config.py` inside the `PipelineConfig` dataclass.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `gate_thresh` | `0.5` | FFireNet sigmoid below this trips the gate and activates YOLO |
-| `gate_frames` | `30` | Number of frames YOLO stays active after the gate trips |
-
+| `gate_thresh` | `0.8` | FFireNet sigmoid below this trips the gate and activates YOLO |
+| `gate_frames` | `60` | Number of frames YOLO stays active after the gate trips |
+ 
 Lower `gate_thresh` makes FFireNet more conservative (needs higher fire confidence to trigger YOLO). Higher values make it more sensitive. `gate_frames` controls how long YOLO keeps running after each trigger — if YOLO finds fire during that window, the countdown resets so the gate stays open.
 
 ### YOLO
@@ -134,12 +139,12 @@ Lower `gate_thresh` makes FFireNet more conservative (needs higher fire confiden
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `conviction_rise` | `0.15` | Conviction added per YOLO fire frame (scales with streak length and score) |
-| `conviction_decay` | `0.08` | Conviction removed per no-fire frame |
+| `conviction_decay` | `0.30` | Conviction removed per no-fire frame |
 | `flicker_penalty` | `0.10` | Conviction subtracted on each fire↔no-fire transition |
 | `alert_conviction` | `0.60` | Conviction level that triggers a fire alert |
 | `clear_conviction` | `0.20` | Conviction level below which an active alert is cleared |
-
-The gap between `alert_conviction` and `clear_conviction` is the **hysteresis band**. A wider gap means alerts are stickier (harder to trigger, harder to clear). A narrower gap makes the system more responsive but more prone to alert flickering.
+ 
+The gap between `alert_conviction` and `clear_conviction` is the **hysteresis band**. A wider gap means alerts are stickier (harder to trigger, harder to clear). A narrower gap makes the system more responsive but more prone to alert flickering. The decay rate (0.30) is intentionally higher than the rise rate (0.15) so conviction drops quickly when fire disappears, while the longer gate window (60 frames) ensures brief occlusions don't prematurely close the gate.
 
 ## Tuning Guide
 
@@ -156,8 +161,8 @@ Run a video you know contains fire and watch the score panel in the bottom-left:
 ## On-Screen Display
 
 - **Red banner** at the top when a fire alert is active
-- **YOLO bounding boxes** drawn in red with confidence scores
-- **Score panel** (bottom-left) shows FFireNet sigmoid, gate state with remaining countdown, YOLO score, conviction level with streak count, alert state, inference time, and YOLO call count
+- **Class-colored YOLO bounding boxes** — red for fire, teal for smoke — with class name and confidence score labels
+- **Score panel** (bottom-left) shows FFireNet sigmoid, gate state with remaining countdown, YOLO score, per-frame fire and smoke detection counts, conviction level with streak count, alert state, inference time, and YOLO call count
 
 ## Models
 
