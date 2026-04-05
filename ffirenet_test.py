@@ -20,7 +20,7 @@ from torchvision import transforms, models
 # ============================================================
 
 MODEL_PATH = "models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth"  # TODO: set your model path
-VIDEO_PATH = "sample_videos/nofire2.mp4"                        # TODO: set your video path
+VIDEO_PATH = "sample_videos/fire7.mp4"                        # TODO: set your video path
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
