@@ -293,8 +293,8 @@ if __name__ == "__main__":
     cfg = PipelineConfig(
         # --- Paths (edit these) ---
         ffirenet_model_path="models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth",
-        yolo_model_path="models/26m_1280imgsz_200epochs/weights/best.pt",
-        video_path="sample_videos/smoke1.mp4",
+        yolo_model_path="models/26m_640imgsz_200epochs/weights/best.pt",
+        video_path="sample_videos/fire7.mp4",
 
         # --- Tune these ---
         gate_thresh=0.8,
