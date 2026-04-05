@@ -23,14 +23,27 @@ Seven configurations were trained spanning YOLOv8 and YOLO26, three model scales
 ## Requirements
 
 - Python 3.10+
-- PyTorch (with CUDA for GPU training)
+- PyTorch with CUDA support
 - Ultralytics
 
+### GPU Setup (recommended)
+
+A CUDA-capable NVIDIA GPU is strongly recommended for training. The default `pip install torch` pulls a **CPU-only** build. To install PyTorch with CUDA support:
+
 ```bash
-pip install torch torchvision ultralytics
+pip uninstall torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 ```
 
-A CUDA-capable GPU is strongly recommended. All experiments were run on a single NVIDIA RTX 5080.
+This installs PyTorch built against CUDA 12.4. Check [pytorch.org/get-started](https://pytorch.org/get-started/locally/) for other CUDA versions or OS-specific instructions.
+
+Then install the remaining dependencies:
+
+```bash
+pip install ultralytics
+```
+
+All experiments were run on a single NVIDIA RTX 5080.
 
 ## Dataset
 
