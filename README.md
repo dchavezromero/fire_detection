@@ -56,14 +56,27 @@ The FFireNet preprocessing image size is automatically parsed from the model fol
 ## Requirements
 
 - Python 3.10+
-- PyTorch
+- PyTorch with CUDA support
 - OpenCV
-- ultralytics (YOLO26)
+- Ultralytics (YOLO26)
 - torchvision
 - NumPy
 
+### GPU Setup
+
+The default `pip install torch` pulls a **CPU-only** build. To install PyTorch with CUDA support for NVIDIA GPUs:
+
 ```bash
-pip install torch torchvision opencv-python ultralytics numpy
+pip uninstall torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+
+This installs PyTorch built against CUDA 12.4. Check [pytorch.org/get-started](https://pytorch.org/get-started/locally/) for other CUDA versions or OS-specific instructions.
+
+Then install the remaining dependencies:
+
+```bash
+pip install opencv-python ultralytics numpy
 ```
 
 ## Project Structure
