@@ -6,6 +6,9 @@ on possible fire. Once tripped, YOLO26 takes over for a configurable
 number of frames to localize and confirm. Conviction tracking on YOLO's
 output drives the final fire alert.
 
+Press 'U' during playback to classify buildings at the demo GPS using the
+UBC Cascade Mask R-CNN model (see ubc_handler.py and PipelineConfig.ubc_*).
+
 Usage:
     python main.py
 """
@@ -22,6 +25,7 @@ from ultralytics import YOLO
 from config import PipelineConfig
 from fusion import ConvictionTracker
 from display import draw_overlay
+from ubc_handler import UBCQueryHandler
 
 
 # ============================================================
@@ -57,9 +61,6 @@ def parse_imgsz(model_path: str) -> int:
     Extract image size from the FFireNet model folder name.
 
     Expected pattern: mobilenet_v2_{N}imgsz_...
-    Examples:
-        models/mobilenet_v2_224imgsz_50epochs_0.01lr/ffirenet.pth  -> 224
-        models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth -> 640
     """
     match = re.search(r"(\d+)imgsz", model_path)
     if not match:
@@ -73,7 +74,6 @@ def parse_imgsz(model_path: str) -> int:
 
 
 def build_ffirenet_preprocess(img_size: int) -> transforms.Compose:
-    """Build the preprocessing transform matching FFireNet training."""
     return transforms.Compose([
         transforms.ToPILImage(),
         transforms.Resize((img_size, img_size)),
@@ -84,7 +84,6 @@ def build_ffirenet_preprocess(img_size: int) -> transforms.Compose:
 
 
 def load_ffirenet(model_path: str, device: torch.device) -> FFireNet:
-    """Load a trained FFireNet from checkpoint."""
     model = FFireNet().to(device)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -100,31 +99,27 @@ class FireDetectionPipeline:
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Load FFireNet + infer preprocessing from path
         self.ffirenet = load_ffirenet(cfg.ffirenet_model_path, self.device)
         img_size = parse_imgsz(cfg.ffirenet_model_path)
         self.ffirenet_preprocess = build_ffirenet_preprocess(img_size)
         print(f"[PIPELINE] FFireNet loaded from {cfg.ffirenet_model_path}")
 
-        # Load YOLO
         self.yolo = YOLO(cfg.yolo_model_path)
         print(f"[PIPELINE] YOLO loaded from {cfg.yolo_model_path}")
         print(f"[PIPELINE] Device: {self.device}")
 
-        # Conviction tracker (driven by YOLO)
         self.tracker = ConvictionTracker(cfg)
-
-        # Gate state
-        self.gate_countdown = 0  # frames remaining with YOLO active
-
-        # Stats
+        self.gate_countdown = 0
         self.stats = {"total_frames": 0, "yolo_runs": 0, "alerts": 0}
+
+        # UBC building classifier (press 'U' to query)
+        self.ubc = UBCQueryHandler(cfg)
+        self.ubc.warmup()
 
     # ----------------------------------------------------------
     # FFireNet inference
     # ----------------------------------------------------------
     def run_ffirenet(self, frame_rgb: np.ndarray) -> float:
-        """Returns raw sigmoid (0 = fire, 1 = no fire)."""
         tensor = self.ffirenet_preprocess(frame_rgb).unsqueeze(0).to(self.device)
         with torch.no_grad():
             logit = self.ffirenet(tensor).squeeze()
@@ -135,7 +130,6 @@ class FireDetectionPipeline:
     # YOLO inference
     # ----------------------------------------------------------
     def run_yolo(self, frame) -> tuple[list, float]:
-        """Returns (detections, yolo_fire_score)."""
         results = self.yolo.predict(
             source=frame,
             conf=self.cfg.yolo_conf,
@@ -160,7 +154,6 @@ class FireDetectionPipeline:
                     "class_name": cls_name,
                 })
 
-        # Score based on fire detections (smoke detections contribute less)
         fire_dets = [d for d in detections if d["class_name"] == "fire"]
         smoke_dets = [d for d in detections if d["class_name"] == "smoke"]
 
@@ -171,28 +164,23 @@ class FireDetectionPipeline:
             score += 0.5 * max_fire_conf + 0.3 * fire_count
         if smoke_dets:
             max_smoke_conf = max(d["confidence"] for d in smoke_dets)
-            score += 0.2 * max_smoke_conf  # smoke is a weaker signal
+            score += 0.2 * max_smoke_conf
 
         yolo_score = min(score, 1.0)
-
         return detections, yolo_score
 
     # ----------------------------------------------------------
     # Process single frame
     # ----------------------------------------------------------
     def process_frame(self, frame) -> dict:
-        """Full pipeline for one frame."""
         self.stats["total_frames"] += 1
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Always run FFireNet (cheap)
         ffirenet_sigmoid = self.run_ffirenet(frame_rgb)
 
-        # Check if FFireNet trips the gate
         if ffirenet_sigmoid < self.cfg.gate_thresh:
             self.gate_countdown = self.cfg.gate_frames
 
-        # Run YOLO if gate is open
         yolo_ran = False
         yolo_score = 0.0
         detections = []
@@ -203,16 +191,13 @@ class FireDetectionPipeline:
             yolo_ran = True
             has_detections = len(detections) > 0
 
-            # YOLO finding fire resets the countdown
             if has_detections:
                 self.gate_countdown = self.cfg.gate_frames
             else:
                 self.gate_countdown -= 1
 
-            # Update conviction based on YOLO results
             alert, conviction = self.tracker.update(yolo_score, has_detections)
         else:
-            # Gate closed — no YOLO, conviction just decays
             alert, conviction = self.tracker.update(0.0, False)
             self.gate_countdown = 0
 
@@ -245,13 +230,14 @@ class FireDetectionPipeline:
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         print(f"[PIPELINE] Video: {self.cfg.video_path} ({total} frames @ {fps_video:.0f} FPS)")
+        print(f"[PIPELINE] Keys: 'q' to quit, 'U' to classify buildings")
 
         writer = None
         if self.cfg.save_output:
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             writer = cv2.VideoWriter(self.cfg.output_path, fourcc, fps_video, (w, h))
 
-        print("[PIPELINE] Running... press 'q' to quit\n")
+        print("[PIPELINE] Running...\n")
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -269,15 +255,19 @@ class FireDetectionPipeline:
 
             if self.cfg.show_display:
                 cv2.imshow("Fire Detection Pipeline", frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                self.ubc.repaint_if_needed()
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
                     break
+                elif key in (ord("u"), ord("U")):
+                    self.ubc.trigger()
 
         cap.release()
         if writer:
             writer.release()
         cv2.destroyAllWindows()
 
-        # Summary
         total_f = self.stats["total_frames"]
         yolo_r = self.stats["yolo_runs"]
         pct = (yolo_r / total_f * 100) if total_f > 0 else 0
@@ -291,12 +281,14 @@ class FireDetectionPipeline:
 # ============================================================
 if __name__ == "__main__":
     cfg = PipelineConfig(
-        # --- Paths (edit these) ---
         ffirenet_model_path="models/mobilenet_v2_640imgsz_100epochs_0.01lr/ffirenet.pth",
         yolo_model_path="models/26m_640imgsz_200epochs/weights/best.pt",
-        video_path="sample_videos/fire7.mp4",
+        video_path="sample_videos/fire1.mp4",
 
-        # --- Tune these ---
+        ubc_demo_lat = 22.44647,           # Munich Altstadt (default demo location)
+        ubc_demo_lon = 114.17627,
+        ubc_task = "roof_coarse",            # or "use_coarse", "roof_fine"
+
         gate_thresh=0.8,
         gate_frames=60,
         yolo_conf=0.3,
