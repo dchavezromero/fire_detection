@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 *.pyo
+# UBC checkpoints — too large for git, distributed via Mega
+models/ubc_*/*.pth
