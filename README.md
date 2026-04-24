@@ -34,10 +34,10 @@ GPU-specific environment differences are documented separately below — **Black
 
 [UBC v1](https://github.com/CityDevelopmentLab/UBC_dataset) (Huang et al., 2022) — 800 satellite image tiles of Beijing + Munich at 600×600 px, 0.5–0.8 m/px GSD. Authors release train (560) + val (160) splits; test split (80) is withheld. Three parallel COCO-format annotation sets.
 
-Place the dataset under `training_dataset/`:
+The dataset ships with this branch under `training_datasets/`:
 
 ```
-training_dataset/UBC_v1.0/
+training_datasets/UBC_v1.0/
 ├── annotations/
 │   ├── roof_coarse_{train,val}.json   5 classes (flat, gable, hipped, arched, other)
 │   ├── roof_fine_{train,val}.json    11 classes (fine-grained taxonomy)
@@ -46,11 +46,16 @@ training_dataset/UBC_v1.0/
 └── val/     160 × .tif tiles + .xml sidecars
 ```
 
-Training assumes the dataset lives at `~/UBC_v1.0/`. Move or symlink as appropriate:
+The training configs reference `~/UBC_v1.0/` as the dataset root. Point that path at the repo's dataset via a symlink (run from the repo root):
 
 ```bash
-ln -s /path/to/training_dataset/UBC_v1.0 ~/UBC_v1.0
+ln -s "$(pwd)/training_datasets/UBC_v1.0" ~/UBC_v1.0
+
+# Verify — should list six JSON files
+ls ~/UBC_v1.0/annotations/
 ```
+
+Alternative: edit `data_root` in `ubc_server/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py` to point at your actual dataset path.
 
 Inference does not need the dataset at runtime.
 
@@ -68,8 +73,10 @@ Inference does not need the dataset at runtime.
 │   │   └── ubc.py                      # UBC dataset class (shared: training + runtime)
 │   ├── ubc_inference.py                # Core inference library
 │   └── server.py                       # FastAPI wrapper
-├── training_dataset/                   # UBC v1 data (structure documented above)
-├── ubc_client.py                       # Windows client
+├── training_datasets/                  # UBC v1 data (symlink target for training)
+├── examples/
+│   └── ubc_inference_from_gps.py       # Standalone single-file demo (no server required)
+├── ubc_client.py                       # Windows client (for LAN calls to server)
 └── README.md
 ```
 
@@ -77,7 +84,7 @@ Inference does not need the dataset at runtime.
 
 # Training
 
-Training reproduces Huang et al.'s Cascade Mask R-CNN setup on the public UBC v1 train/val split. Each task takes **~2.5–3.5 hours** on a single RTX 5080 at batch size 6; total across all three tasks is **~8–9 hours**.
+Training reproduces Huang et al.'s Cascade Mask R-CNN setup on the public UBC v1 train/val split. Each task takes **~2.5–3.5 hours** on a single RTX 5080 at batch size 6 (16 GB VRAM); total across all three tasks is **~8–9 hours**. Smaller GPUs need smaller batches — see the [VRAM & batch size](#vram--batch-size-guidance) section below before launching.
 
 ## GPU environment setup
 
@@ -153,6 +160,9 @@ Build takes 5–15 minutes. Watch nvcc output for `compute_120,code=sm_120` conf
 ### 5. MMDetection + remaining deps
 
 ```bash
+# Re-pin setuptools — earlier installs may have downgraded it, which breaks PEP 660 editable install
+pip install -U "setuptools>=64,<80"
+
 cd ~
 git clone https://github.com/open-mmlab/mmdetection.git
 cd mmdetection
@@ -183,7 +193,7 @@ python -c "import mmdet; print(mmdet.__version__)"
 <details>
 <summary><b>Option B — Ampere (RTX 30/40-series, sm_86/sm_89) — alternate training or inference host</b></summary>
 
-Used for our inference deployment on an RTX 3070 Ti Laptop (Ampere, sm_86, 8 GB VRAM). Ampere has prebuilt MMCV wheels available, which dramatically simplifies the install. This same setup also works for training on Ampere hardware (expect longer wall-clock than Blackwell — probably 5–8 hours per task at batch 4 on an 8 GB card).
+Used for our inference deployment on an RTX 3070 Ti Laptop (Ampere, sm_86, 8 GB VRAM). Ampere has prebuilt MMCV wheels available, which dramatically simplifies the install. This setup also works for training on Ampere hardware at smaller batch size — see [VRAM & batch size](#vram--batch-size-guidance) below.
 
 ### 1. Conda env + anti-pollution setting
 
@@ -236,6 +246,9 @@ MMCV downloads a ~80 MB wheel — no compilation.
 ### 4. MMDetection + remaining deps
 
 ```bash
+# Re-pin setuptools — earlier installs may have downgraded it, which breaks PEP 660 editable install
+pip install -U "setuptools>=64,<80"
+
 cd ~
 git clone https://github.com/open-mmlab/mmdetection.git
 cd mmdetection
@@ -254,13 +267,13 @@ Same as Blackwell section — `box_iou_rotated` should produce `tensor([[0.3708]
 
 ## Install UBC dataset class + configs
 
-MMDetection needs to know about the UBC dataset classes. Drop the plugin file into MMDetection's datasets directory and register it in `__init__.py`, then copy configs into place.
+MMDetection needs to know about the UBC dataset classes. Drop the plugin file into MMDetection's datasets directory and register it in `__init__.py`, then copy configs into place. Run these commands from the repo root.
 
 ```bash
 # UBC dataset class
 cp ubc_server/mmdet_plugins/ubc.py ~/mmdetection/mmdet/datasets/
 
-# Register in __init__.py
+# Register in __init__.py (portable — uses the running user's home)
 python3 << EOF
 import os
 path = os.path.expanduser('~/mmdetection/mmdet/datasets/__init__.py')
@@ -303,7 +316,7 @@ MAX_EPOCHS = 100
 VAL_INTERVAL = 5
 LR_STEP_EPOCHS = [int(MAX_EPOCHS * 0.6), int(MAX_EPOCHS * 0.9)]   # 60, 90
 
-data_root = '/home/dennis/UBC_v1.0/'   # edit to match your host
+data_root = '~/UBC_v1.0/'   # symlink to training_datasets/UBC_v1.0 (see Dataset section)
 
 train_pipeline = [
     dict(type='LoadImageFromFile'),
@@ -313,7 +326,7 @@ train_pipeline = [
     dict(type='PackDetInputs'),
 ]
 
-train_dataloader = dict(batch_size=6, ...)
+train_dataloader = dict(batch_size=6, ...)   # adjust to fit your GPU
 
 optim_wrapper = dict(
     optimizer=dict(type='SGD', lr=0.0075, momentum=0.9, weight_decay=0.0001),
@@ -323,6 +336,42 @@ load_from = 'checkpoints/cascade_mask_rcnn_r50_fpn_1x_coco.pth'
 ```
 
 Task-specific configs override `num_classes` + dataset type + annotation filenames. No other changes needed.
+
+## VRAM & batch size guidance
+
+Cascade Mask R-CNN at 600×600 is memory-heavy. Use this table to size the batch before launching:
+
+| GPU VRAM | Recommended batch | Scaled LR | Expected time/task |
+|----------|-------------------|-----------|---------------------|
+| 16 GB (RTX 5080, 4070 Ti Super) | 6 | 0.0075 | ~2.5–3.5 h |
+| 12 GB (RTX 5070, 4070, 3080 Ti) | 4 | 0.005 | ~3.5–5 h |
+| 8 GB (RTX 3070 Ti Laptop, 4060) | 2 | 0.0025 | ~6–9 h |
+
+**LR scaling rule:** linear with batch size, using MMDetection's reference of `0.02 at batch 16` as the anchor. For batch B on 1 GPU: `lr = 0.02 * B / 16`.
+
+**If you hit CUDA OOM during training**, the error is unambiguous:
+
+```
+torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 266.00 MiB.
+GPU 0 has a total capacity of 7.66 GiB of which 219.69 MiB is free.
+```
+
+Drop the batch size in `ubc_server/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py`:
+
+```python
+train_dataloader = dict(batch_size=2, ...)   # was 6
+```
+
+And proportionally drop the LR:
+
+```python
+optim_wrapper = dict(
+    optimizer=dict(type='SGD', lr=0.0025, ...))   # was 0.0075
+```
+
+Then re-copy the config to `~/mmdetection/configs/ubc/` and restart.
+
+**Don't fight VRAM headroom** — Cascade's memory usage varies by tile density, so leave ~1 GB buffer between your peak and the card's limit. A run that OOMs halfway through is a ~2 hour loss; a conservative batch is ~20% longer but always finishes.
 
 ## Training runs
 
@@ -339,7 +388,7 @@ wget -O checkpoints/cascade_mask_rcnn_r50_fpn_1x_coco.pth \
 
 ### 2. 1-epoch sanity run (strongly recommended before full training)
 
-Before committing to a ~3 hour run, verify the pipeline end-to-end:
+Before committing to a multi-hour run, verify the pipeline end-to-end:
 
 ```bash
 sed -i 's/^MAX_EPOCHS = .*/MAX_EPOCHS = 1/' ~/mmdetection/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py
@@ -350,7 +399,7 @@ rm -rf work_dirs/cascade-mask-rcnn_r50_fpn_ubc_roof_fine
 python tools/train.py configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_roof_fine.py
 ```
 
-Success criteria: 5–10 min runtime, completes without error, produces an 11-row per-class AP table, saves a best checkpoint. Overall mAP will be near zero — that's expected at 1 epoch, structural validation is the goal.
+Success criteria: completes without error, produces an 11-row per-class AP table, saves a best checkpoint, doesn't OOM. Overall mAP will be near zero — that's expected at 1 epoch, structural validation is the goal.
 
 ### 3. Full 100-epoch runs
 
@@ -399,7 +448,7 @@ Useful for spotting loss divergence or stuck classes without watching the consol
 
 ## Per-task training budgets
 
-Measured on RTX 5080 (Blackwell, 16 GB VRAM):
+Measured on RTX 5080 (Blackwell, 16 GB VRAM, batch 6):
 
 | Task | Time | Best epoch | Final Segm mAP |
 |------|------|------------|----------------|
@@ -407,7 +456,7 @@ Measured on RTX 5080 (Blackwell, 16 GB VRAM):
 | roof_fine | ~3 h | 75 | 0.088 |
 | use_coarse | ~2.5 h | 50 | 0.101 |
 
-Total: ~8–9 hours across all three tasks. On Ampere (RTX 30-series), expect roughly 1.5–2× these times depending on VRAM available; may need to drop batch size to 4 on 8 GB cards.
+Total: ~8–9 hours across all three tasks at batch 6. Scale up proportionally for smaller batch sizes — batch 2 on 8 GB VRAM roughly triples the wall-clock because the per-epoch iteration count triples.
 
 ## Training observations
 
@@ -417,7 +466,7 @@ Total: ~8–9 hours across all three tasks. On Ampere (RTX 30-series), expect ro
 
 ## After training
 
-Copy best checkpoints to `ubc_server/checkpoints/` with short names:
+Copy best checkpoints to `ubc_server/checkpoints/` with short names. Run from the repo root:
 
 ```bash
 cp ~/mmdetection/work_dirs/cascade-mask-rcnn_r50_fpn_ubc_roof_coarse/best_coco_segm_mAP_epoch_*.pth \
@@ -432,13 +481,26 @@ If inference runs on a different host, transfer the three `.pth` files via thumb
 
 ## Training troubleshooting
 
+### `FileNotFoundError: [Errno 2] No such file or directory: '/home/<user>/UBC_v1.0/annotations/...'`
+
+Dataset not found at the path the config expects. Either create the symlink (see [Dataset](#dataset)) or edit `data_root` in the base config.
+
+### `torch.cuda.OutOfMemoryError: CUDA out of memory`
+
+Your GPU can't fit the configured batch size. See [VRAM & batch size](#vram--batch-size-guidance) for recommended values per card. Drop batch + LR together.
+
 ### `Cannot use unregistered type UBCRoofFineDataset`
 
 Plugin registration didn't take effect. Verify with `python -c "from mmdet.datasets import UBCRoofFineDataset"`. Re-run the registration snippet above if this fails.
 
 ### `ERROR: Project ... uses a build backend that is missing the 'build_editable' hook`
 
-Setuptools too old (<64). `pip install -U "setuptools>=64,<80"`.
+Setuptools too old (<64). Re-pin before retrying the editable install:
+
+```bash
+pip install -U "setuptools>=64,<80"
+pip install -v -e . --no-build-isolation
+```
 
 ### `ModuleNotFoundError: No module named 'pkg_resources'` during MMCV build
 
@@ -454,7 +516,7 @@ Harmless. UBC tiles are GeoTIFFs carrying geospatial metadata OpenCV's reader do
 
 ### Loss NaN or exploding early in training
 
-Most commonly LR too high or bad data. With batch 6 and LR 0.0075, this shouldn't happen on UBC. If it does, drop LR to 0.0025 as first try.
+Most commonly LR too high relative to batch size. Confirm you've scaled LR with batch — see [VRAM & batch size](#vram--batch-size-guidance). If LR is already scaled appropriately, try halving it as a first diagnostic.
 
 ---
 
