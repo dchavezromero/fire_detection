@@ -3,3 +3,6 @@ __pycache__/
 *.pyo
 # UBC checkpoints — too large for git, distributed via Mega
 models/ubc_*/*.pth
+
+# Inference output
+inference_out/
