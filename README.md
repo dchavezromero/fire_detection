@@ -1,10 +1,12 @@
-# UBC Building Classification — Training & Inference
+# UBC Building Classification — Training & Inference Module
 
-Cascade Mask R-CNN training and inference for the UBC (Urban Building Classification) dataset, built on [MMDetection 3.3.0](https://mmdetection.readthedocs.io/en/v3.3.0/). Part of a larger fire detection pipeline — when YOLO + FFireNet confirm a fire alert, the system queries the inference service with the drone's GPS coordinates to identify buildings in the surrounding area and their type, informing fire severity assessment and suppression strategy.
+Cascade Mask R-CNN training pipeline and importable inference module for the UBC (Urban Building Classification) dataset, built on [MMDetection 3.3.0](https://mmdetection.readthedocs.io/en/v3.3.0/). Part of a larger fire detection pipeline — when YOLO + FFireNet confirm a fire alert, the main-branch pipeline imports this module to identify buildings around the drone's GPS coordinates and their type, informing fire severity assessment and suppression strategy.
 
 ## Overview
 
-This branch contains the full replication of Huang et al. (2022) CVPRW on the public UBC v1 dataset across all three classification tasks (roof_coarse, roof_fine, use_coarse), plus a FastAPI inference service (`ubc_server/`) and a standalone Windows client (`ubc_client.py`) that demonstrates end-to-end classification from a GPS coordinate.
+This branch contains the full replication of Huang et al. (2022) CVPRW on the public UBC v1 dataset across all three classification tasks (roof_coarse, roof_fine, use_coarse), an importable Python module (`ubc_classifier/`) that provides Esri imagery fetch + inference + visualization functions, and a standalone demo script (`examples/ubc_inference_from_gps.py`) that runs the full GPS-to-classification flow from the command line.
+
+The classifier runs **in-process** as a module on the same host as the fire detection pipeline. There is no separate server.
 
 ### Results Summary
 
@@ -23,14 +25,14 @@ Replication ratio ranges from 62% (roof_fine) to 80% (use_coarse). The gap scale
 ## Requirements
 
 - Python 3.10
-- NVIDIA GPU (training: any CUDA-capable; inference tested on Ampere sm_86+)
+- NVIDIA GPU (training: any CUDA-capable; inference: any working CUDA setup)
 - Ubuntu 22.04+ (dual-boot native preferred; WSL2 works but slower)
 - NVIDIA driver 525+
 - Miniconda
 
 GPU-specific environment differences are documented separately below — **Blackwell (RTX 50-series)** requires source-building MMCV, while **Ampere (RTX 30/40-series)** uses prebuilt wheels.
 
-**If you only want to run inference**, you can skip the entire training pipeline — download our pretrained checkpoints (see [Pretrained weights](#pretrained-weights)) and jump to the [Inference](#inference) section. The Ampere install path is all you need.
+**If you only want to run inference**, you can skip the entire training pipeline — download our pretrained checkpoints (see [Pretrained weights](#pretrained-weights)) and jump to the [Inference](#inference) section.
 
 ## Dataset
 
@@ -57,7 +59,7 @@ ln -s "$(pwd)/training_datasets/UBC_v1.0" ~/UBC_v1.0
 ls ~/UBC_v1.0/annotations/
 ```
 
-Alternative: edit `data_root` in `ubc_server/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py` to point at your actual dataset path.
+Alternative: edit `data_root` in `ubc_classifier/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py` to point at your actual dataset path.
 
 Inference does not need the dataset at runtime.
 
@@ -75,17 +77,16 @@ Contents:
 | `roof_fine.pth` | ~310 MB | 11-class fine-grained roof | 75 | 0.088 |
 | `use_coarse.pth` | ~310 MB | 5-class building function | 50 | 0.101 |
 
-After downloading, place all three files in `ubc_server/checkpoints/`:
+After downloading, place all three files in `ubc_classifier/checkpoints/`:
 
 ```bash
-mkdir -p ubc_server/checkpoints
-# Move downloaded files into that directory
-mv ~/Downloads/roof_coarse.pth ubc_server/checkpoints/
-mv ~/Downloads/roof_fine.pth   ubc_server/checkpoints/
-mv ~/Downloads/use_coarse.pth  ubc_server/checkpoints/
+mkdir -p ubc_classifier/checkpoints
+mv ~/Downloads/roof_coarse.pth ubc_classifier/checkpoints/
+mv ~/Downloads/roof_fine.pth   ubc_classifier/checkpoints/
+mv ~/Downloads/use_coarse.pth  ubc_classifier/checkpoints/
 
 # Verify
-ls -la ubc_server/checkpoints/
+ls -la ubc_classifier/checkpoints/
 # Expect 3 files, ~310 MB each
 ```
 
@@ -95,22 +96,22 @@ With the checkpoints in place, skip directly to [Inference](#inference) — you 
 
 ```
 ├── training/
-│   └── README.md                       # Documents training process; configs live in ubc_server/
-├── ubc_server/
+│   └── README.md                       # Documents training process; configs live in ubc_classifier/
+├── ubc_classifier/                     # Importable Python module
 │   ├── configs/                        # Shared: training + runtime
-│   │   ├── _base_/                     # MMDetection base configs
+│   │   ├── _base_/                     # Minimal MMDetection base configs (only what UBC inherits)
 │   │   └── ubc/                        # UBC task configs (4 files)
 │   ├── checkpoints/                    # .gitignored — download from Mega link (see Pretrained weights)
 │   ├── mmdet_plugins/
 │   │   └── ubc.py                      # UBC dataset class (shared: training + runtime)
-│   ├── ubc_inference.py                # Core inference library
-│   └── server.py                       # FastAPI wrapper
-├── training_datasets/                  # UBC v1 data (symlink target for training)
+│   └── ubc_inference.py                # Public module API
+├── training_datasets/                  # UBC v1 data
 ├── examples/
-│   └── ubc_inference_from_gps.py       # Standalone single-file demo (no server required)
-├── ubc_client.py                       # Windows client (for LAN calls to server)
+│   └── ubc_inference_from_gps.py       # Standalone CLI demo (runs the full flow)
 └── README.md
 ```
+
+The `ubc_classifier/` directory is the deliverable — drop it into any Python project (with a working MMDetection install) and you have building classification on tap.
 
 ---
 
@@ -227,7 +228,7 @@ python -c "import mmdet; print(mmdet.__version__)"
 <details>
 <summary><b>Option B — Ampere (RTX 30/40-series, sm_86/sm_89) — alternate training or inference host</b></summary>
 
-Used for our inference deployment on an RTX 3070 Ti Laptop (Ampere, sm_86, 8 GB VRAM). Ampere has prebuilt MMCV wheels available, which dramatically simplifies the install. This setup also works for training on Ampere hardware at smaller batch size — see [VRAM & batch size](#vram--batch-size-guidance) below.
+Ampere has prebuilt MMCV wheels available, which dramatically simplifies the install. This setup also works for training on Ampere hardware at smaller batch size — see [VRAM & batch size](#vram--batch-size-guidance) below.
 
 ### 1. Conda env + anti-pollution setting
 
@@ -263,7 +264,6 @@ Verify:
 ```bash
 python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"
 # Expect: 2.1.0+cu121 [..., 'sm_86', ...]
-python -c "import torch; a=torch.randn(1000,1000,device='cuda'); print((a@a).shape)"
 ```
 
 ### 3. MMEngine + prebuilt MMCV
@@ -305,7 +305,7 @@ MMDetection needs to know about the UBC dataset classes. Drop the plugin file in
 
 ```bash
 # UBC dataset class
-cp ubc_server/mmdet_plugins/ubc.py ~/mmdetection/mmdet/datasets/
+cp ubc_classifier/mmdet_plugins/ubc.py ~/mmdetection/mmdet/datasets/
 
 # Register in __init__.py (portable — uses the running user's home)
 python3 << EOF
@@ -338,7 +338,7 @@ python -c "from mmdet.datasets import UBCRoofFineDataset; print(UBCRoofFineDatas
 
 # Configs
 mkdir -p ~/mmdetection/configs/ubc
-cp ubc_server/configs/ubc/*.py ~/mmdetection/configs/ubc/
+cp ubc_classifier/configs/ubc/*.py ~/mmdetection/configs/ubc/
 ```
 
 ## Training configuration
@@ -383,14 +383,7 @@ Cascade Mask R-CNN at 600×600 is memory-heavy. Use this table to size the batch
 
 **LR scaling rule:** linear with batch size, using MMDetection's reference of `0.02 at batch 16` as the anchor. For batch B on 1 GPU: `lr = 0.02 * B / 16`.
 
-**If you hit CUDA OOM during training**, the error is unambiguous:
-
-```
-torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 266.00 MiB.
-GPU 0 has a total capacity of 7.66 GiB of which 219.69 MiB is free.
-```
-
-Drop the batch size in `ubc_server/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py`:
+**If you hit CUDA OOM during training**, drop the batch size in `ubc_classifier/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py`:
 
 ```python
 train_dataloader = dict(batch_size=2, ...)   # was 6
@@ -442,9 +435,6 @@ Restore the full schedule:
 ```bash
 sed -i 's/^MAX_EPOCHS = .*/MAX_EPOCHS = 100/' ~/mmdetection/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py
 sed -i 's/^VAL_INTERVAL = .*/VAL_INTERVAL = 5/' ~/mmdetection/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py
-
-grep -E "^(MAX_EPOCHS|VAL_INTERVAL)" ~/mmdetection/configs/ubc/cascade-mask-rcnn_r50_fpn_ubc_base.py
-# Expect: MAX_EPOCHS = 100, VAL_INTERVAL = 5
 ```
 
 Launch each task (they can be run back-to-back overnight):
@@ -478,8 +468,6 @@ tensorboard --logdir ~/mmdetection/work_dirs/
 # Open http://localhost:6006 in a browser
 ```
 
-Useful for spotting loss divergence or stuck classes without watching the console log.
-
 ## Per-task training budgets
 
 Measured on RTX 5080 (Blackwell, 16 GB VRAM, batch 6):
@@ -500,21 +488,19 @@ Total: ~8–9 hours across all three tasks at batch 6. Scale up proportionally f
 
 ## After training
 
-Copy best checkpoints to `ubc_server/checkpoints/` with short names. Run from the repo root:
+Copy best checkpoints to `ubc_classifier/checkpoints/` with short names. Run from the repo root:
 
 ```bash
 # Create the checkpoints directory (gitignored — doesn't exist on fresh clone)
-mkdir -p ubc_server/checkpoints
+mkdir -p ubc_classifier/checkpoints
 
 cp ~/mmdetection/work_dirs/cascade-mask-rcnn_r50_fpn_ubc_roof_coarse/best_coco_segm_mAP_epoch_*.pth \
-   ubc_server/checkpoints/roof_coarse.pth
+   ubc_classifier/checkpoints/roof_coarse.pth
 cp ~/mmdetection/work_dirs/cascade-mask-rcnn_r50_fpn_ubc_roof_fine/best_coco_segm_mAP_epoch_*.pth \
-   ubc_server/checkpoints/roof_fine.pth
+   ubc_classifier/checkpoints/roof_fine.pth
 cp ~/mmdetection/work_dirs/cascade-mask-rcnn_r50_fpn_ubc_use_coarse/best_coco_segm_mAP_epoch_*.pth \
-   ubc_server/checkpoints/use_coarse.pth
+   ubc_classifier/checkpoints/use_coarse.pth
 ```
-
-If inference runs on a different host, transfer the three `.pth` files via thumb drive or scp.
 
 ## Training troubleshooting
 
@@ -538,142 +524,6 @@ Setuptools too old (<64). Re-pin before retrying the editable install:
 pip install -U "setuptools>=64,<80"
 pip install -v -e . --no-build-isolation
 ```
-
-### `ModuleNotFoundError: No module named 'pkg_resources'` during MMCV build
-
-Pip's build isolation used setuptools 82+. Add `--no-build-isolation`.
-
-### `RuntimeError: CUDA error: no kernel image is available for execution on the device`
-
-PyTorch or MMCV was built without support for your GPU's compute capability. For Blackwell, confirm `'sm_120'` in `torch.cuda.get_arch_list()` and rebuild MMCV with `TORCH_CUDA_ARCH_LIST="12.0"` explicit.
-
-### OpenCV TIFF warnings: `Unknown field with tag 33550/33922/34735/34737`
-
-Harmless. UBC tiles are GeoTIFFs carrying geospatial metadata OpenCV's reader doesn't recognize. Silence with `export OPENCV_LOG_LEVEL=ERROR`.
-
-### Loss NaN or exploding early in training
-
-Most commonly LR too high relative to batch size. Confirm you've scaled LR with batch — see [VRAM & batch size](#vram--batch-size-guidance). If LR is already scaled appropriately, try halving it as a first diagnostic.
-
----
-
-# Inference
-
-Inference runs as a FastAPI service on any GPU host. Ampere or newer recommended (Blackwell also works but requires the source-built MMCV from the training-host recipe).
-
-## Server setup
-
-Follow the **Ampere (Option B)** environment setup above, then add server-specific dependencies:
-
-```bash
-pip install fastapi "uvicorn[standard]" python-multipart opencv-python requests
-```
-
-Create the checkpoints directory (gitignored — doesn't exist on fresh clone) and populate with the three trained `.pth` files:
-
-```bash
-mkdir -p ubc_server/checkpoints
-# then transfer roof_coarse.pth, roof_fine.pth, use_coarse.pth from training host
-```
-
-## Running the server
-
-```bash
-cd ubc_server
-python server.py --warmup use_coarse
-```
-
-Binds to `0.0.0.0:8000`. `--warmup` eagerly loads one or more task models (~3 s per model) to eliminate first-request latency. All three models fit in 8 GB VRAM.
-
-Other launch options:
-
-```bash
-python server.py --warmup use_coarse roof_coarse   # preload two models
-python server.py --port 9000                       # custom port
-python server.py                                   # lazy load (loads on first request per task)
-```
-
-## Endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/health` | GET | Liveness + cached task list |
-| `/tasks` | GET | List tasks + class names + load status |
-| `/classify/gps` | POST | `{lat, lon, task}` → annotated image + detections |
-| `/classify/image` | POST | Upload image → annotated image + detections (bypasses Esri) |
-
-Sample:
-
-```bash
-curl -X POST http://192.168.1.11:8000/classify/gps \
-    -H "Content-Type: application/json" \
-    -d '{"lat": 48.1374, "lon": 11.5755, "task": "use_coarse"}'
-```
-
-Response shape:
-
-```json
-{
-  "detections": [
-    {"class_id": 0, "class_name": "residential", "score": 0.94, "bbox_xyxy": [...]},
-    ...
-  ],
-  "annotated_image_b64": "iVBORw0KGgo...",
-  "raw_image_b64": "iVBORw0KGgo...",
-  "meta": {"inference_sec": 0.098, "total_sec": 1.593, ...}
-}
-```
-
-## Client
-
-Run on Windows inside the fire_detection venv (with `pip install requests` added):
-
-```bash
-python ubc_client.py --lat 48.1374 --lon 11.5755 --task use_coarse
-```
-
-Pings the server, sends the coordinates, opens an OpenCV window with the annotated tile, prints per-class detection summary to stdout.
-
-Other client modes:
-
-```bash
-# Switch tasks
-python ubc_client.py --lat 48.1374 --lon 11.5755 --task roof_coarse
-
-# Save without display (for batch report figures)
-python ubc_client.py --lat 42.2626 --lon -71.8023 --task use_coarse \
-    --save figures/worcester.png --no-display
-
-# Different server host
-python ubc_client.py --lat 48.1374 --lon 11.5755 --server http://192.168.1.11:8000
-```
-
-## Performance
-
-Measured on RTX 3070 Ti Laptop GPU (Ampere, sm_86, 8 GB VRAM):
-
-| Stage | Latency |
-|-------|---------|
-| First per-task request (model load) | ~3–4 s |
-| Cached-model inference | ~100 ms |
-| Esri imagery fetch (600×600 PNG) | ~1–1.5 s |
-| Total end-to-end `/classify/gps` | ~1.5–2 s |
-
-On Blackwell (5080), inference latency drops to ~40-60 ms but Esri fetch time dominates, so total roundtrip is similar.
-
-## Good demo coordinates
-
-| Location | Lat, Lon | Shows |
-|----------|----------|-------|
-| Munich Altstadt | `48.1374, 11.5755` | Dense historic core, mixed gable/hipped, public dominant |
-| Munich suburb | `48.1100, 11.5900` | Apartment blocks, flat roofs, residential dominant |
-| Beijing Chaoyang | `39.9200, 116.4500` | Modern residential high-rise |
-| Beijing Hutongs | `39.9250, 116.3800` | Traditional courtyard architecture |
-| Worcester, MA | `42.2626, -71.8023` | Out-of-training-distribution test |
-
-Running all three tasks at one location produces a useful comparison figure.
-
-## Inference troubleshooting
 
 ### `_pickle.UnpicklingError: Weights only load failed`
 
@@ -700,41 +550,135 @@ EOF
 
 Safe because the checkpoints are ones you (or the repo maintainers) trained.
 
-### `[client] ERROR: could not reach server`
+### OpenCV TIFF warnings: `Unknown field with tag 33550/33922/34735/34737`
 
-- Server running? `curl http://localhost:8000/health` on server host should return JSON
-- Firewall: `sudo ufw allow 8000/tcp` on the server host
-- LAN IP changed? DHCP can reassign — check current IP with `ip addr show`; consider router DHCP reservation
+Harmless. UBC tiles are GeoTIFFs carrying geospatial metadata OpenCV's reader doesn't recognize. Silence with `export OPENCV_LOG_LEVEL=ERROR`.
 
-### `ImportError: libnvJitLink.so.12`
+### Loss NaN or exploding early in training
 
-CUDA runtime library missing. `pip install --force-reinstall nvidia-nvjitlink-cu12==12.1.105` and verify `LD_LIBRARY_PATH` includes the nvidia lib dirs.
+Most commonly LR too high relative to batch size. Confirm you've scaled LR with batch — see [VRAM & batch size](#vram--batch-size-guidance). If LR is already scaled appropriately, try halving it as a first diagnostic.
 
-### `ModuleNotFoundError: No module named 'typing_extensions'` (and related)
+---
 
-User-site pollution from stale `~/.local/lib/python3.10/`. Ensure `PYTHONNOUSERSITE=1` is set (see Ampere setup step 1), then reinstall affected packages.
+# Inference
 
-### Server returns 502 "Esri image fetch failed"
+The `ubc_classifier/` directory is an importable Python module. Three public functions in `ubc_inference.py` form the API: fetch satellite imagery from Esri given a GPS coordinate, run a trained model on it, and visualize the results. The fire detection pipeline on the `main` branch wraps these with a non-blocking thread.
 
-Esri's free tier occasionally rate-limits. Retry after 30 seconds. For higher throughput, use an Esri developer account with an API key (modify `fetch_esri_image()` in `ubc_inference.py`).
+## Module API
+
+```python
+import ubc_classifier.ubc_inference as ubc
+
+# 1. Fetch satellite imagery for a GPS coordinate
+img_bgr = ubc.fetch_esri_image(
+    lat=48.1374, lon=11.5755,    # Munich Altstadt
+    buffer_meters=150.0,          # 300m × 300m ground area
+    img_size=600,                 # 600×600 px (matches UBC training GSD)
+)
+
+# 2. Run a trained Cascade Mask R-CNN model
+result = ubc.run_ubc_inference(
+    img_bgr,
+    task="use_coarse",            # or "roof_coarse" / "roof_fine"
+    score_threshold=0.3,
+)
+# result.pred_instances has bboxes, scores, labels, masks
+
+# 3. Render predictions over the input image
+annotated = ubc.visualize_predictions(img_bgr, result, task="use_coarse")
+# annotated is a BGR ndarray ready for cv2.imshow / cv2.imwrite
+```
+
+The `get_model(task)` function lazily loads + caches the requested checkpoint on first call (~3 s per task). Subsequent calls are free. Call it explicitly at startup if you want to absorb load latency before the first user-visible query:
+
+```python
+ubc.get_model("use_coarse")    # warmup
+```
+
+All three task models fit comfortably in 8 GB VRAM if loaded simultaneously.
+
+## Standalone CLI demo
+
+`examples/ubc_inference_from_gps.py` runs the full pipeline as a one-shot command — useful for testing the install, generating report figures, or sanity-checking new locations:
+
+```bash
+# Munich city center, function classification
+python examples/ubc_inference_from_gps.py \
+    --lat 48.1374 --lon 11.5755 \
+    --task use_coarse
+
+# Roof type at the same coordinate
+python examples/ubc_inference_from_gps.py \
+    --lat 48.1374 --lon 11.5755 \
+    --task roof_coarse
+
+# Save without display, custom output dir (good for batch figures)
+python examples/ubc_inference_from_gps.py \
+    --lat 42.2626 --lon -71.8023 \
+    --task use_coarse \
+    --out-dir figures/worcester
+```
+
+Output: two PNG files per query — `<lat>_<lon>_<task>_raw.png` (the satellite image) and `<lat>_<lon>_<task>_annotated.png` (with predictions overlaid).
+
+## Performance
+
+Measured on RTX 5080 (Blackwell, 16 GB VRAM):
+
+| Stage | Latency |
+|-------|---------|
+| First per-task `get_model()` call | ~3–4 s (loads checkpoint) |
+| Cached-model inference | ~50–100 ms |
+| Esri imagery fetch (600×600 PNG) | ~1–1.5 s |
+| Total end-to-end (cached) | ~1.5–2 s (network-dominated) |
+
+Esri's free tier is the bottleneck; switching to a paid Esri API key would mostly remove that latency.
+
+## Good demo coordinates
+
+| Location | Lat, Lon | Shows |
+|----------|----------|-------|
+| Munich Altstadt | `48.1374, 11.5755` | Dense historic core, mixed gable/hipped, public dominant |
+| Munich suburb | `48.1100, 11.5900` | Apartment blocks, flat roofs, residential dominant |
+| Beijing Chaoyang | `39.9200, 116.4500` | Modern residential high-rise |
+| Beijing Hutongs | `39.9250, 116.3800` | Traditional courtyard architecture |
+| Worcester, MA | `42.2626, -71.8023` | Out-of-training-distribution test |
+
+Running all three tasks at one location produces a useful comparison figure.
+
+## Inference troubleshooting
+
+### `ImportError: cannot import name 'ubc_inference'`
+
+Make sure your importing code adds `ubc_classifier/` to `sys.path` before `import ubc_inference`, or import via the full package path `from ubc_classifier import ubc_inference`. The fire detection pipeline's `ubc_handler.py` shows the sys.path approach.
+
+### `Esri returned HTTP 502` or empty response
+
+Esri's free tier rate-limits intermittently. Retry after 30 seconds. For higher throughput, register an Esri developer account and supply an API key in `fetch_esri_image()`.
+
+### `_pickle.UnpicklingError: Weights only load failed`
+
+See the same entry in the [Training troubleshooting](#training-troubleshooting) section above — same patch applies.
 
 ---
 
 # Integration with the Fire Detection Pipeline
 
-When the pipeline on the `main` branch fires a fire alert, it queries the inference server with the drone's GPS coordinates to retrieve building context for the affected area. The architecture is deliberately split across two machines:
+When the pipeline on the `main` branch fires a fire alert, it imports `ubc_classifier.ubc_inference` and runs building classification on satellite imagery near the drone's GPS coordinates. Both the fire pipeline (YOLO + FFireNet) and the classifier run in a single Python process on the same host, sharing the GPU.
 
-- **Windows desktop** runs YOLO + FFireNet in real-time
-- **Ubuntu laptop** runs Cascade Mask R-CNN as a reachable service
+In our demo flow, the pipeline binds the `'U'` key to a manual classifier trigger so the operator chooses when to query — useful for live demos, where unsolicited classifications would be visually noisy. The handler runs the query in a background thread (Esri fetch is ~1–1.5 s of network I/O), and a result window pops up when the response arrives.
 
-Rationale:
+For a production drone deployment, the same module functions would be called automatically when `alert_triggered` transitions to True in the conviction tracker, with the drone's actual GPS feed providing `(lat, lon)` instead of the demo coordinate.
 
-1. **Compute offload.** Cascade Mask R-CNN's ~100 ms inference is the heaviest stage. Keeping it off the fire-detection machine preserves GPU memory and scheduling for the real-time path.
-2. **Hardware availability.** Training on Blackwell (RTX 5080) via dual-boot Ubuntu; inference on Ampere (RTX 3070 Ti Laptop) where MMDetection's standard prebuilt wheels work without source-building.
-3. **Deployment parity.** In a real drone system, the inference service would run in the cloud rather than on the drone or ground station. The LAN-based demo mirrors that request shape exactly.
-4. **Matches proposal.** Phase 2 proposal Figure 11 describes this as a service call triggered when fire is localized.
+## Single-machine rationale
 
-To integrate into the real-time fire pipeline, the conviction tracker calls `classify_gps()` from `ubc_client.py` when `alert_triggered` transitions to True, passing the drone's current (lat, lon). The returned annotated image and detection list can be overlaid into the pipeline's display or logged for post-incident review.
+Earlier iterations of this branch shipped with a FastAPI server (`server.py`) and an HTTP client, supporting a two-machine architecture. We removed that in favor of in-process module use because:
+
+1. **Same machine, same GPU.** The fire pipeline and classifier run on the same host in the demo. HTTP between two processes on `localhost` adds serialization overhead (base64 PNG encoding, JSON transport, FastAPI request handling) for no architectural gain.
+2. **One environment to maintain.** With `ubc_mmdet` already supporting both MMDetection and Ultralytics, we don't need a separate server env or a separate client env.
+3. **Cleaner failure modes.** A missing checkpoint surfaces as an `ImportError` at startup, not a 500 response 30 seconds into a demo.
+
+The "production drone deployment" in the proposal continues to suggest the classifier as a cloud service, which is sensible at that scale — but for a single-host demo, modules win on simplicity.
 
 # Class Mapping
 
@@ -771,7 +715,7 @@ To integrate into the real-time fire pipeline, the conviction tracker calls `cla
 | 3 | public |
 | 4 | other |
 
-Mappings declared in [`ubc_server/mmdet_plugins/ubc.py`](ubc_server/mmdet_plugins/ubc.py) via `METAINFO` and must match the training annotation files.
+Mappings declared in [`ubc_classifier/mmdet_plugins/ubc.py`](ubc_classifier/mmdet_plugins/ubc.py) via `METAINFO` and must match the training annotation files.
 
 # References
 

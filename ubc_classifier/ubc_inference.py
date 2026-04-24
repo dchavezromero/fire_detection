@@ -36,10 +36,10 @@ import requests
 # ---------------------------------------------------------------------------
 # Paths — resolved relative to this file so the server works from any location
 # ---------------------------------------------------------------------------
-SERVER_ROOT = Path(__file__).resolve().parent
-CONFIG_ROOT = SERVER_ROOT / "configs"
-CHECKPOINT_ROOT = SERVER_ROOT / "checkpoints"
-PLUGIN_ROOT = SERVER_ROOT / "mmdet_plugins"
+PACKAGE_ROOT = Path(__file__).resolve().parent
+CONFIG_ROOT = PACKAGE_ROOT / "configs"
+CHECKPOINT_ROOT = PACKAGE_ROOT / "checkpoints"
+PLUGIN_ROOT = PACKAGE_ROOT / "mmdet_plugins"
 
 
 # ---------------------------------------------------------------------------
