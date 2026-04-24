@@ -70,7 +70,7 @@ This pipeline needs a working MMDetection install alongside PyTorch + Ultralytic
 ### 1. Clone the repo
 
 ```bash
-git clone <repo-url> fire_detection
+git clone git@github.com:dchavezromero/fire_detection.git
 cd fire_detection
 ```
 

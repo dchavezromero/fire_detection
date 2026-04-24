@@ -285,7 +285,7 @@ if __name__ == "__main__":
         yolo_model_path="models/26m_640imgsz_200epochs/weights/best.pt",
         video_path="sample_videos/fire1.mp4",
 
-        ubc_demo_lat = 22.44647,           # Munich Altstadt (default demo location)
+        ubc_demo_lat = 22.44647,           # Wang Fuk Court fire (default demo location)
         ubc_demo_lon = 114.17627,
         ubc_task = "roof_coarse",            # or "use_coarse", "roof_fine"
 
