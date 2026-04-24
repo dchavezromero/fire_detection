@@ -675,6 +675,31 @@ Running all three tasks at one location produces a useful comparison figure.
 
 ## Inference troubleshooting
 
+### `_pickle.UnpicklingError: Weights only load failed`
+
+PyTorch 2.6+ defaults `torch.load` to `weights_only=True`, which rejects MMEngine's checkpoint format. Patch MMEngine's loader once per env:
+
+```bash
+python3 << 'EOF'
+import mmengine.runner.checkpoint as ckpt_mod
+import inspect
+src = inspect.getsourcefile(ckpt_mod)
+with open(src, 'r') as f:
+    content = f.read()
+old = "checkpoint = torch.load(filename, map_location=map_location)"
+new = "checkpoint = torch.load(filename, map_location=map_location, weights_only=False)"
+if old in content and new not in content:
+    content = content.replace(old, new)
+    with open(src, 'w') as f:
+        f.write(content)
+    print("Patched")
+elif new in content:
+    print("Already patched")
+EOF
+```
+
+Safe because the checkpoints are ones you (or the repo maintainers) trained.
+
 ### `[client] ERROR: could not reach server`
 
 - Server running? `curl http://localhost:8000/health` on server host should return JSON
