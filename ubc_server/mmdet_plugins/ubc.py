@@ -13,7 +13,7 @@ from mmdet.datasets import CocoDataset
 from mmdet.registry import DATASETS
 
 
-@DATASETS.register_module()
+@DATASETS.register_module(force=True)
 class UBCRoofFineDataset(CocoDataset):
     """UBC fine-grained roof-type classification (11 classes).
 
@@ -36,7 +36,7 @@ class UBCRoofFineDataset(CocoDataset):
     }
 
 
-@DATASETS.register_module()
+@DATASETS.register_module(force=True)
 class UBCRoofCoarseDataset(CocoDataset):
     """UBC coarse roof-type classification (5 classes).
 
@@ -51,7 +51,7 @@ class UBCRoofCoarseDataset(CocoDataset):
     }
 
 
-@DATASETS.register_module()
+@DATASETS.register_module(force=True)
 class UBCUseCoarseDataset(CocoDataset):
     """UBC coarse building-function classification (5 classes).
 
