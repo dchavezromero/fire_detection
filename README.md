@@ -30,6 +30,8 @@ Replication ratio ranges from 62% (roof_fine) to 80% (use_coarse). The gap scale
 
 GPU-specific environment differences are documented separately below — **Blackwell (RTX 50-series)** requires source-building MMCV, while **Ampere (RTX 30/40-series)** uses prebuilt wheels.
 
+**If you only want to run inference**, you can skip the entire training pipeline — download our pretrained checkpoints (see [Pretrained weights](#pretrained-weights)) and jump to the [Inference](#inference) section. The Ampere install path is all you need.
+
 ## Dataset
 
 [UBC v1](https://github.com/CityDevelopmentLab/UBC_dataset) (Huang et al., 2022) — 800 satellite image tiles of Beijing + Munich at 600×600 px, 0.5–0.8 m/px GSD. Authors release train (560) + val (160) splits; test split (80) is withheld. Three parallel COCO-format annotation sets.
@@ -59,6 +61,36 @@ Alternative: edit `data_root` in `ubc_server/configs/ubc/cascade-mask-rcnn_r50_f
 
 Inference does not need the dataset at runtime.
 
+## Pretrained weights
+
+The three trained checkpoints from our RTX 5080 training runs are available as a pre-packaged download, for users who want to run inference without reproducing training.
+
+**Download:** [Mega folder](https://mega.nz/folder/sBZDTYAD#8vHE33KrOt_M20QyJQnl3Q)
+
+Contents:
+
+| File | Size | Task | Best epoch | Final Segm mAP |
+|------|------|------|------------|-----------------|
+| `roof_coarse.pth` | ~310 MB | 5-class roof geometry | 75 | 0.140 |
+| `roof_fine.pth` | ~310 MB | 11-class fine-grained roof | 75 | 0.088 |
+| `use_coarse.pth` | ~310 MB | 5-class building function | 50 | 0.101 |
+
+After downloading, place all three files in `ubc_server/checkpoints/`:
+
+```bash
+mkdir -p ubc_server/checkpoints
+# Move downloaded files into that directory
+mv ~/Downloads/roof_coarse.pth ubc_server/checkpoints/
+mv ~/Downloads/roof_fine.pth   ubc_server/checkpoints/
+mv ~/Downloads/use_coarse.pth  ubc_server/checkpoints/
+
+# Verify
+ls -la ubc_server/checkpoints/
+# Expect 3 files, ~310 MB each
+```
+
+With the checkpoints in place, skip directly to [Inference](#inference) — you don't need any of the training setup.
+
 ## Project Structure
 
 ```
@@ -68,7 +100,7 @@ Inference does not need the dataset at runtime.
 │   ├── configs/                        # Shared: training + runtime
 │   │   ├── _base_/                     # MMDetection base configs
 │   │   └── ubc/                        # UBC task configs (4 files)
-│   ├── checkpoints/                    # .gitignored — ~1 GB of trained weights
+│   ├── checkpoints/                    # .gitignored — download from Mega link (see Pretrained weights)
 │   ├── mmdet_plugins/
 │   │   └── ubc.py                      # UBC dataset class (shared: training + runtime)
 │   ├── ubc_inference.py                # Core inference library
@@ -83,6 +115,8 @@ Inference does not need the dataset at runtime.
 ---
 
 # Training
+
+Skip this section if you're using our [pretrained weights](#pretrained-weights) — training is only needed to reproduce our numbers from scratch or train on a different dataset.
 
 Training reproduces Huang et al.'s Cascade Mask R-CNN setup on the public UBC v1 train/val split. Each task takes **~2.5–3.5 hours** on a single RTX 5080 at batch size 6 (16 GB VRAM); total across all three tasks is **~8–9 hours**. Smaller GPUs need smaller batches — see the [VRAM & batch size](#vram--batch-size-guidance) section below before launching.
 
