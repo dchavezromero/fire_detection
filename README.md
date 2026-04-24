@@ -261,8 +261,9 @@ MMDetection needs to know about the UBC dataset classes. Drop the plugin file in
 cp ubc_server/mmdet_plugins/ubc.py ~/mmdetection/mmdet/datasets/
 
 # Register in __init__.py
-python3 << 'EOF'
-path = '/home/dennis/mmdetection/mmdet/datasets/__init__.py'
+python3 << EOF
+import os
+path = os.path.expanduser('~/mmdetection/mmdet/datasets/__init__.py')
 with open(path) as f:
     content = f.read()
 if 'UBCRoofFineDataset' not in content:
