@@ -34,9 +34,9 @@ import requests
 
 
 # ---------------------------------------------------------------------------
-# Paths — edit these if you move ~/ubc_server/ elsewhere
+# Paths — resolved relative to this file so the server works from any location
 # ---------------------------------------------------------------------------
-SERVER_ROOT = Path.home() / "ubc_server"
+SERVER_ROOT = Path(__file__).resolve().parent
 CONFIG_ROOT = SERVER_ROOT / "configs"
 CHECKPOINT_ROOT = SERVER_ROOT / "checkpoints"
 PLUGIN_ROOT = SERVER_ROOT / "mmdet_plugins"

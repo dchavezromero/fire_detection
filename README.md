@@ -469,6 +469,9 @@ Total: ~8–9 hours across all three tasks at batch 6. Scale up proportionally f
 Copy best checkpoints to `ubc_server/checkpoints/` with short names. Run from the repo root:
 
 ```bash
+# Create the checkpoints directory (gitignored — doesn't exist on fresh clone)
+mkdir -p ubc_server/checkpoints
+
 cp ~/mmdetection/work_dirs/cascade-mask-rcnn_r50_fpn_ubc_roof_coarse/best_coco_segm_mAP_epoch_*.pth \
    ubc_server/checkpoints/roof_coarse.pth
 cp ~/mmdetection/work_dirs/cascade-mask-rcnn_r50_fpn_ubc_roof_fine/best_coco_segm_mAP_epoch_*.pth \
@@ -532,7 +535,12 @@ Follow the **Ampere (Option B)** environment setup above, then add server-specif
 pip install fastapi "uvicorn[standard]" python-multipart opencv-python requests
 ```
 
-Populate `ubc_server/checkpoints/` with the three trained `.pth` files (as in the "After training" step).
+Create the checkpoints directory (gitignored — doesn't exist on fresh clone) and populate with the three trained `.pth` files:
+
+```bash
+mkdir -p ubc_server/checkpoints
+# then transfer roof_coarse.pth, roof_fine.pth, use_coarse.pth from training host
+```
 
 ## Running the server
 
