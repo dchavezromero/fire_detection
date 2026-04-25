@@ -244,7 +244,7 @@ def visualize_predictions(
         return t.cpu().numpy() if hasattr(t, "cpu") else t
 
     masks  = _tocpu(pred.masks)
-    boxes  = _tocpu(pred.bboxes)
+    # boxes  = _tocpu(pred.bboxes)
     scores = _tocpu(pred.scores)
     labels = _tocpu(pred.labels)
 
@@ -255,16 +255,16 @@ def visualize_predictions(
     vis = cv2.addWeighted(overlay, mask_alpha, vis, 1 - mask_alpha, 0)
 
     # Boxes + text
-    for box, score, label in zip(boxes, scores, labels):
-        x1, y1, x2, y2 = map(int, box)
-        color = colors[int(label) % len(colors)]
-        cname = class_names[int(label)]
-        cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
-        text = f"{cname}: {score:.2f}"
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-        cv2.rectangle(vis, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
-        cv2.putText(vis, text, (x1 + 2, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    # for box, score, label in zip(boxes, scores, labels):
+    #     x1, y1, x2, y2 = map(int, box)
+    #     color = colors[int(label) % len(colors)]
+    #     cname = class_names[int(label)]
+    #     cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
+    #     text = f"{cname}: {score:.2f}"
+    #     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+    #     cv2.rectangle(vis, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+    #     cv2.putText(vis, text, (x1 + 2, y1 - 4),
+    #                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
 
     # Legend
     unique = sorted(set(int(l) for l in labels))
