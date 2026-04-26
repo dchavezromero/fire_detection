@@ -287,7 +287,7 @@ if __name__ == "__main__":
 
         ubc_demo_lat = 22.44647,           # Wang Fuk Court fire (default demo location)
         ubc_demo_lon = 114.17627,
-        ubc_task = "roof_coarse",            # or "use_coarse", "roof_fine"
+        ubc_task = "use_coarse",            # or "roof_coarse", "roof_fine"
 
         gate_thresh=0.8,
         gate_frames=60,
