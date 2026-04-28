@@ -29,8 +29,9 @@ Replication ratio ranges from 62% (roof_fine) to 80% (use_coarse). The gap scale
 - Ubuntu 22.04+ (dual-boot native preferred; WSL2 works but slower)
 - NVIDIA driver 525+
 - Miniconda
+- ≥16 GB system RAM recommended for the install (use `--no-cache-dir` on lower-RAM systems)
 
-GPU-specific environment differences are documented separately below — **Blackwell (RTX 50-series)** requires source-building MMCV, while **Ampere (RTX 30/40-series)** uses prebuilt wheels.
+GPU-specific environment differences are documented separately below — **Blackwell (RTX 50-series)** requires source-building MMCV; **Ampere or older (RTX 30/40-series, GTX 16-series, etc.)** uses prebuilt wheels.
 
 **If you only want to run inference**, you can skip the entire training pipeline — download our pretrained checkpoints (see [Pretrained weights](#pretrained-weights)) and jump to the [Inference](#inference) section.
 
@@ -89,6 +90,8 @@ mv ~/Downloads/use_coarse.pth  ubc_classifier/checkpoints/
 ls -la ubc_classifier/checkpoints/
 # Expect 3 files, ~310 MB each
 ```
+
+**Note on the `main` branch convention:** the integrated fire-detection pipeline on the `main` branch expects UBC checkpoints under `models/ubc_*_600imgsz_100epochs/<task>.pth` instead, matching the YOLO/FFireNet directory pattern. If you'll be using both branches, populate both locations or symlink between them.
 
 With the checkpoints in place, skip directly to [Inference](#inference) — you don't need any of the training setup.
 
@@ -226,9 +229,13 @@ python -c "import mmdet; print(mmdet.__version__)"
 </details>
 
 <details>
-<summary><b>Option B — Ampere (RTX 30/40-series, sm_86/sm_89) — alternate training or inference host</b></summary>
+<summary><b>Option B — Ampere or older (RTX 30/40-series, GTX 16-series — anything sm_75 to sm_89)</b></summary>
 
-Ampere has prebuilt MMCV wheels available, which dramatically simplifies the install. This setup also works for training on Ampere hardware at smaller batch size — see [VRAM & batch size](#vram--batch-size-guidance) below.
+Used for our inference deployment on an RTX 3070 Ti Laptop (Ampere, sm_86, 8 GB VRAM) and successfully reproduced by users on GTX 1660 (Turing, sm_75). Any GPU with compute capability sm_75 to sm_89 works — these cards have prebuilt MMCV wheels available, which dramatically simplifies the install.
+
+This setup also works for training at smaller batch size; see [VRAM & batch size](#vram--batch-size-guidance) below.
+
+> **Low system RAM (≤16 GB)?** Append `--no-cache-dir` to every `pip install` command in this section. pip's wheel cache balloons memory during install of large packages (PyTorch, MMCV) and can OOM on 16 GB systems with no swap. The flag forces re-download on retry but keeps install memory bounded.
 
 ### 1. Conda env + anti-pollution setting
 
@@ -242,12 +249,12 @@ echo 'export PYTHONNOUSERSITE=1' > $CONDA_PREFIX/etc/conda/activate.d/no_user_si
 conda deactivate && conda activate ubc_mmdet
 ```
 
-### 2. PyTorch 2.1.0 + cu121
+### 2. PyTorch 2.1.x + cu121
 
-Pin torch to 2.1.0 because MMCV 2.1.0 has prebuilt wheels for exactly this version. Newer torch forces a source build.
+Pin torch to the 2.1.x line because MMCV 2.1.0's prebuilt wheels target torch 2.1's compiled API. Patch versions 2.1.0, 2.1.1, and 2.1.2 all work — pick whichever is currently easiest to fetch.
 
 ```bash
-pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 \
+pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
     --index-url https://download.pytorch.org/whl/cu121
 
 pip install --force-reinstall nvidia-nvjitlink-cu12==12.1.105
@@ -263,7 +270,7 @@ Verify:
 
 ```bash
 python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"
-# Expect: 2.1.0+cu121 [..., 'sm_86', ...]
+# Expect: 2.1.2+cu121 [..., 'sm_75', 'sm_80', 'sm_86', 'sm_89', ...]
 ```
 
 ### 3. MMEngine + prebuilt MMCV
@@ -272,6 +279,9 @@ python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"
 pip install -U "setuptools>=64,<80"
 pip install -U openmim
 mim install mmengine
+
+# Pin MMCV via direct pip install (more deterministic than `mim install mmcv` —
+# `mim` can fall back to source builds on edge cases and take a long time before failing)
 pip install mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html
 ```
 
@@ -380,6 +390,7 @@ Cascade Mask R-CNN at 600×600 is memory-heavy. Use this table to size the batch
 | 16 GB (RTX 5080, 4070 Ti Super) | 6 | 0.0075 | ~2.5–3.5 h |
 | 12 GB (RTX 5070, 4070, 3080 Ti) | 4 | 0.005 | ~3.5–5 h |
 | 8 GB (RTX 3070 Ti Laptop, 4060) | 2 | 0.0025 | ~6–9 h |
+| 6 GB (GTX 1660 / 1660 Ti) | 1 | 0.00125 | ~10–14 h |
 
 **LR scaling rule:** linear with batch size, using MMDetection's reference of `0.02 at batch 16` as the anchor. For batch B on 1 GPU: `lr = 0.02 * B / 16`.
 
@@ -398,7 +409,7 @@ optim_wrapper = dict(
 
 Then re-copy the config to `~/mmdetection/configs/ubc/` and restart.
 
-**Don't fight VRAM headroom** — Cascade's memory usage varies by tile density, so leave ~1 GB buffer between your peak and the card's limit. A run that OOMs halfway through is a ~2 hour loss; a conservative batch is ~20% longer but always finishes.
+**Don't fight VRAM headroom** — Cascade's memory usage varies by tile density, so leave ~1 GB buffer between your peak and the card's limit. A run that OOMs halfway through is a multi-hour loss; a conservative batch is ~20% longer but always finishes.
 
 ## Training runs
 
@@ -525,6 +536,22 @@ pip install -U "setuptools>=64,<80"
 pip install -v -e . --no-build-isolation
 ```
 
+### `mim install mmcv` hangs or starts compiling from source
+
+`mim`'s wheel resolution can fall through to source build on edge cases. Bypass with direct pip install:
+
+```bash
+pip install mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html
+```
+
+### `pip install` is OOM-killed during install
+
+Common on systems with ≤16 GB RAM and no swap. PyTorch and MMCV wheels balloon pip's cache during install. Add `--no-cache-dir` to the failing install:
+
+```bash
+pip install <package> --no-cache-dir
+```
+
 ### `_pickle.UnpicklingError: Weights only load failed`
 
 PyTorch 2.6+ defaults `torch.load` to `weights_only=True`, which rejects MMEngine's checkpoint format. Patch MMEngine's loader once per env:
@@ -595,7 +622,7 @@ The `get_model(task)` function lazily loads + caches the requested checkpoint on
 ubc.get_model("use_coarse")    # warmup
 ```
 
-All three task models fit comfortably in 8 GB VRAM if loaded simultaneously.
+All three task models fit comfortably in 8 GB VRAM if loaded simultaneously. On 6 GB cards you'll need the [low-VRAM lazy-load pattern](#low-vram-cards-6-gb).
 
 ## Standalone CLI demo
 
@@ -627,8 +654,8 @@ Measured on RTX 5080 (Blackwell, 16 GB VRAM):
 
 | Stage | Latency |
 |-------|---------|
-| First per-task `get_model()` call | ~3–4 s (loads checkpoint) |
-| Cached-model inference | ~50–100 ms |
+| First per-task `get_model()` call | ~3 s (loads checkpoint) |
+| Cached-model inference | ~50 ms |
 | Esri imagery fetch (600×600 PNG) | ~1–1.5 s |
 | Total end-to-end (cached) | ~1.5–2 s (network-dominated) |
 
@@ -642,9 +669,77 @@ Esri's free tier is the bottleneck; switching to a paid Esri API key would mostl
 | Munich suburb | `48.1100, 11.5900` | Apartment blocks, flat roofs, residential dominant |
 | Beijing Chaoyang | `39.9200, 116.4500` | Modern residential high-rise |
 | Beijing Hutongs | `39.9250, 116.3800` | Traditional courtyard architecture |
-| Worcester, MA | `42.2626, -71.8023` | Out-of-training-distribution test |
+| Wang Fuk Court (Tai Po, Hong Kong) | `22.4478, 114.1755` | Tower-on-podium typology — illustrates OOD failure modes (towers misread as `public`, podiums as `commercial`) |
+| Worcester, MA | `42.2626, -71.8023` | North American suburban OOD test |
 
 Running all three tasks at one location produces a useful comparison figure.
+
+## Low-VRAM cards (≤6 GB)
+
+The integrated pipeline on the `main` branch loads three models simultaneously (FFireNet + YOLO + one UBC task), totaling ~4–5 GB peak VRAM. On a 6 GB card (e.g., GTX 1660), this leaves no headroom and OOMs during inference bursts.
+
+Mitigation: switch the UBC handler to lazy-load + purge mode. In `ubc_handler.py` on the `main` branch, replace `warmup()` with a no-op:
+
+```python
+def warmup(self):
+    """Lazy-load mode for low-VRAM cards: model loads on first 'U' press."""
+    print(f"[UBC] Ready (lazy-load mode). Press 'U' to classify buildings at "
+          f"({self.cfg.ubc_demo_lat}, {self.cfg.ubc_demo_lon})")
+```
+
+And modify `_run_query()` to load the model at the top, then evict after inference:
+
+```python
+def _run_query(self):
+    """Thread target for low-VRAM mode: load → fetch → infer → visualize → purge."""
+    try:
+        t0 = time.perf_counter()
+
+        # Lazy load — only push the model into VRAM now, not at startup
+        print(f"[UBC] Loading '{self.cfg.ubc_task}' into VRAM...")
+        ubc.get_model(self.cfg.ubc_task)
+
+        img = ubc.fetch_esri_image(
+            lat=self.cfg.ubc_demo_lat, lon=self.cfg.ubc_demo_lon,
+            buffer_meters=self.cfg.ubc_buffer_meters,
+            img_size=self.cfg.ubc_img_size,
+        )
+        if img is None:
+            raise RuntimeError("Esri fetch failed (network error or rate limit)")
+
+        result = ubc.run_ubc_inference(
+            img, self.cfg.ubc_task,
+            score_threshold=self.cfg.ubc_score_threshold,
+        )
+        annotated = ubc.visualize_predictions(img, result, self.cfg.ubc_task)
+
+        # Evict the UBC model so the fire-detection loop can reclaim its VRAM
+        ubc._MODEL_CACHE.clear()    # drop Python references in ubc_inference's cache
+        import torch
+        torch.cuda.empty_cache()
+
+        n = len(result.pred_instances)
+        ms = int((time.perf_counter() - t0) * 1000)
+        print(f"[UBC] {n} buildings detected in {ms} ms (model purged from VRAM)")
+
+        with self._lock:
+            self._latest_result = annotated
+            self._needs_repaint = True
+    except Exception as e:
+        msg = f"UBC query failed: {e}"
+        print(f"[UBC] ERROR: {msg}")
+        with self._lock:
+            self._last_error = msg
+            self._needs_repaint = True
+    finally:
+        self._pending = False
+        import torch
+        torch.cuda.empty_cache()
+```
+
+The `ubc._MODEL_CACHE.clear()` call is what actually frees the model — `torch.cuda.empty_cache()` alone only releases unused allocator blocks, not live model tensors.
+
+Trade-off: every `U` press now incurs the ~3 s model load cost. Acceptable for demos with infrequent queries; less so for sustained workloads.
 
 ## Inference troubleshooting
 
@@ -659,6 +754,10 @@ Esri's free tier rate-limits intermittently. Retry after 30 seconds. For higher 
 ### `_pickle.UnpicklingError: Weights only load failed`
 
 See the same entry in the [Training troubleshooting](#training-troubleshooting) section above — same patch applies.
+
+### `torch.cuda.OutOfMemoryError` on inference (not training)
+
+The integrated pipeline on `main` runs three models concurrently. On 6 GB cards this leaves no headroom. See [Low-VRAM cards](#low-vram-cards-6-gb) for the lazy-load + purge pattern.
 
 ---
 
