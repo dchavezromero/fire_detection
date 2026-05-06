@@ -22,28 +22,65 @@ Seven configurations were trained spanning YOLOv8 and YOLO26, three model scales
 
 ## Requirements
 
-- Python 3.10+
-- PyTorch with CUDA support
-- Ultralytics
+- Python 3.10
+- NVIDIA GPU (any CUDA-capable; we trained on RTX 5080)
+- PyTorch with CUDA support — version depends on GPU generation (see below)
+- Ultralytics, OpenCV, NumPy <2.0
 
-### GPU Setup (recommended)
+### Already have the `ubc_mmdet` env from the ubc_model branch?
 
-A CUDA-capable NVIDIA GPU is strongly recommended for training. The default `pip install torch` pulls a **CPU-only** build. To install PyTorch with CUDA support:
-
-```bash
-pip uninstall torch torchvision torchaudio
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-```
-
-This installs PyTorch built against CUDA 12.4. Check [pytorch.org/get-started](https://pytorch.org/get-started/locally/) for other CUDA versions or OS-specific instructions.
-
-Then install the remaining dependencies:
+Just add Ultralytics on top — the env's PyTorch install already supports YOLO:
 
 ```bash
+conda activate ubc_mmdet
 pip install ultralytics
+pip install "numpy<2.0"   # Ultralytics' deps may pull numpy 2.x; pin it down
 ```
 
-All experiments were run on a single NVIDIA RTX 5080.
+You can skip the rest of this section.
+
+### Fresh install — GPU setup
+
+The default `pip install torch` pulls a **CPU-only** build. Match the install to your GPU generation:
+
+<details>
+<summary><b>Blackwell (RTX 50-series, sm_120)</b></summary>
+
+Blackwell needs CUDA 12.8+ wheels — older `cu124` wheels lack `sm_120` kernels and fail at runtime with "no kernel image is available."
+
+```bash
+conda create -n yolo_fire python=3.10 -y
+conda activate yolo_fire
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install ultralytics opencv-python "numpy<2.0"
+```
+
+Verify `sm_120` is in the supported architecture list:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"
+# Expect: 2.11.0+cu128 [..., 'sm_120']
+```
+
+</details>
+
+<details>
+<summary><b>Ampere or older (RTX 30/40-series, GTX 16-series — anything sm_75 to sm_89)</b></summary>
+
+```bash
+conda create -n yolo_fire python=3.10 -y
+conda activate yolo_fire
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install ultralytics opencv-python "numpy<2.0"
+```
+
+Low system RAM (≤16 GB)? Append `--no-cache-dir` to each pip command — pip's wheel cache balloons during install of large packages and can OOM on systems with no swap.
+
+</details>
+
+All experiments in the results table were run on a single NVIDIA RTX 5080 (Blackwell, 16 GB VRAM, batch 20).
 
 ## Dataset
 
@@ -118,6 +155,17 @@ Key observations from our experiments:
 - **Scale:** YOLO26l (large) provided no measurable gain over YOLO26m (0.673 vs 0.674 mAP@50:95), confirming medium as the efficiency sweet spot
 - **Epochs:** 200 epochs with patience 50 yielded the best results; the nano model at 50 epochs was significantly weaker (0.478 mAP@50:95)
 
+### Batch size guidance
+
+| GPU VRAM | Recommended batch (640px) | Notes |
+|----------|---------------------------|-------|
+| 16 GB (RTX 5080, 4070 Ti Super) | 20 | Used for our results |
+| 12 GB (RTX 5070, 4070, 3080 Ti) | 12–16 | |
+| 8 GB (RTX 3070 Ti Laptop, 4060) | 8 | |
+| 6 GB (GTX 1660 / 1660 Ti) | 4 | Tight; reduce to 2 if OOM |
+
+Increase to 1280px input only if you have ≥12 GB VRAM and your input data justifies the resolution bump.
+
 ### Output Structure
 
 After training completes, the script creates a folder like:
@@ -163,9 +211,9 @@ The `source` parameter accepts video files, image files, directories of images, 
 
 ## Integration with the Fire Detection Pipeline
 
-These trained models plug directly into the two-stage gated pipeline on the `main` branch. The pipeline uses FFireNet as a lightweight binary gate (~3ms per frame) that activates YOLO only when fire is likely, reducing average compute load for real-time UAV deployment. YOLO's detections feed a conviction tracker with streak-aware gains, flicker penalties, and hysteresis to produce stable fire alerts.
+These trained models plug directly into the gated pipeline on the `main` branch. The pipeline uses FFireNet as a lightweight binary gate (~3 ms per frame) that activates YOLO only when fire is likely, reducing average compute load for real-time UAV deployment. YOLO's detections feed a conviction tracker with streak-aware gains, flicker penalties, and hysteresis to produce stable fire alerts.
 
-To use a trained model in the pipeline, update the path in `config.py`:
+To use a trained model in the integrated pipeline, copy the trained folder into the `main` branch's `models/` directory and update the path in `config.py`:
 
 ```python
 cfg = PipelineConfig(
@@ -186,6 +234,24 @@ The dataset defines two classes:
 | 1 | fire |
 
 This mapping is configured in the pipeline via `PipelineConfig.class_names`.
+
+## Troubleshooting
+
+### `RuntimeError: CUDA error: no kernel image is available for execution on the device`
+
+Your PyTorch install doesn't support your GPU's compute capability. Most commonly hit on RTX 50-series (Blackwell, sm_120) when installing the default cu121 or cu124 wheels — neither has `sm_120` kernels. Reinstall with the `cu128` index URL shown in the [Blackwell setup section](#fresh-install--gpu-setup).
+
+### `pip install` is OOM-killed
+
+Common on systems with ≤16 GB RAM and no swap. PyTorch wheels balloon pip's cache during install. Add `--no-cache-dir`:
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
+```
+
+### Numpy version conflict warnings
+
+If `pip check` reports `opencv-python requires numpy>=2`, that's cosmetic — OpenCV's declared requirement is loose, and 1.26.x works fine in practice. The `numpy<2.0` pin is needed downstream for MMDetection on the ubc_model branch.
 
 ## License
 
