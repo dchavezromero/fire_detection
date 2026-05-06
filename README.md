@@ -10,7 +10,7 @@ FFireNet freezes a pretrained MobileNetV2 backbone and trains a small classifica
 
 ### Why PyTorch?
 
-The original FFireNet was implemented in TensorFlow/Keras. We reimplemented in PyTorch because TensorFlow dropped native Windows GPU support after version 2.10, and the rest of our pipeline (YOLO26 via Ultralytics) is PyTorch-native — a single framework simplifies dependency management and GPU memory sharing.
+The original FFireNet was implemented in TensorFlow/Keras. We reimplemented in PyTorch because TensorFlow dropped native Windows GPU support after version 2.10, and the rest of our pipeline (YOLO26 via Ultralytics, UBC Cascade Mask R-CNN via MMDetection) is PyTorch-native — a single framework simplifies dependency management and GPU memory sharing.
 
 ### Results Summary
 
@@ -29,28 +29,66 @@ The best configuration (640px, 100 epochs) achieves **97.38% accuracy** with hig
 
 ## Requirements
 
-- Python 3.10+
-- PyTorch with CUDA support
-- torchvision
-- NumPy, Pillow, tqdm
+- Python 3.10
+- NVIDIA GPU (any CUDA-capable; we trained on RTX 5080)
+- PyTorch with CUDA support — version depends on GPU generation (see below)
+- torchvision, NumPy <2.0, Pillow, tqdm
 - matplotlib, seaborn, scikit-learn (for evaluation)
 
-### GPU Setup
+### Already have the `ubc_mmdet` env from the ubc_model branch?
 
-The default `pip install torch` pulls a **CPU-only** build. To install PyTorch with CUDA support for NVIDIA GPUs:
-
-```bash
-pip uninstall torch torchvision torchaudio
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-```
-
-This installs PyTorch built against CUDA 12.4. Check [pytorch.org/get-started](https://pytorch.org/get-started/locally/) for other CUDA versions or OS-specific instructions.
-
-Then install the remaining dependencies:
+Just add the FFireNet-specific deps on top — the env's PyTorch install already supports MobileNetV2:
 
 ```bash
-pip install numpy pillow tqdm matplotlib seaborn scikit-learn
+conda activate ubc_mmdet
+pip install matplotlib seaborn scikit-learn tqdm
+pip install "numpy<2.0"   # confirm the pin is still in place
 ```
+
+You can skip the rest of this section.
+
+### Fresh install — GPU setup
+
+The default `pip install torch` pulls a **CPU-only** build. Match the install to your GPU generation:
+
+<details>
+<summary><b>Blackwell (RTX 50-series, sm_120)</b></summary>
+
+Blackwell needs CUDA 12.8+ wheels — older `cu124` wheels lack `sm_120` kernels and fail at runtime with "no kernel image is available."
+
+```bash
+conda create -n ffirenet python=3.10 -y
+conda activate ffirenet
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install matplotlib seaborn scikit-learn tqdm pillow "numpy<2.0"
+```
+
+Verify `sm_120` is in the supported architecture list:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"
+# Expect: 2.11.0+cu128 [..., 'sm_120']
+```
+
+</details>
+
+<details>
+<summary><b>Ampere or older (RTX 30/40-series, GTX 16-series — anything sm_75 to sm_89)</b></summary>
+
+```bash
+conda create -n ffirenet python=3.10 -y
+conda activate ffirenet
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install matplotlib seaborn scikit-learn tqdm pillow "numpy<2.0"
+```
+
+Low system RAM (≤16 GB)? Append `--no-cache-dir` to each pip command — pip's wheel cache balloons during install of large packages and can OOM on systems with no swap.
+
+</details>
+
+All experiments in the results table were run on a single NVIDIA RTX 5080 (Blackwell, 16 GB VRAM, batch 64).
 
 ## Project Structure
 
@@ -155,6 +193,19 @@ Following the original paper (Table 4):
 
 Augmentation is applied only to training data. Validation and test sets use resize + normalize only.
 
+### Batch size guidance
+
+FFireNet is small enough that batch size mostly affects training speed rather than fitting in VRAM. The defaults in `ffirenet_train.py` work on most cards:
+
+| GPU VRAM | Recommended batch (640px) | Notes |
+|----------|---------------------------|-------|
+| 16 GB (RTX 5080, 4070 Ti Super) | 64 | Used for our results |
+| 12 GB (RTX 5070, 4070, 3080 Ti) | 64 | Same — plenty of headroom |
+| 8 GB (RTX 3070 Ti Laptop, 4060) | 32 | |
+| 6 GB (GTX 1660 / 1660 Ti) | 16 | Drop further to 8 if OOM |
+
+At 224 px the model fits much larger batches; bump to 128+ on cards with ≥12 GB VRAM if training time matters.
+
 ### Output
 
 Results are saved to a named folder under `models/`:
@@ -220,7 +271,7 @@ The overlay shows the fire/no-fire prediction, confidence percentage, FPS, and f
 
 ## Integration with the Fire Detection Pipeline
 
-Trained FFireNet models plug directly into the two-stage pipeline on the `main` branch, where they serve as the every-frame gate. Update the path in `config.py`:
+Trained FFireNet models plug directly into the gated pipeline on the `main` branch, where they serve as the every-frame gate. Copy the trained folder into the `main` branch's `models/` directory and update the path in `config.py`:
 
 ```python
 cfg = PipelineConfig(
@@ -230,6 +281,34 @@ cfg = PipelineConfig(
 ```
 
 In the pipeline, FFireNet's sigmoid output is compared against `gate_thresh` (default 0.8). When it falls below that threshold (indicating possible fire), YOLO26 activates for spatial localization. FFireNet is used purely as a trigger — all scoring and confirmation is handled by YOLO and the conviction tracker.
+
+## Troubleshooting
+
+### `RuntimeError: CUDA error: no kernel image is available for execution on the device`
+
+Your PyTorch install doesn't support your GPU's compute capability. Most commonly hit on RTX 50-series (Blackwell, sm_120) when installing the default cu121 or cu124 wheels — neither has `sm_120` kernels. Reinstall with the `cu128` index URL shown in the [Blackwell setup section](#fresh-install--gpu-setup).
+
+### `pip install` is OOM-killed
+
+Common on systems with ≤16 GB RAM and no swap. PyTorch wheels balloon pip's cache during install. Add `--no-cache-dir`:
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
+```
+
+### Numpy version conflict warnings
+
+If `pip check` reports `opencv-python requires numpy>=2`, that's cosmetic — OpenCV's declared requirement is loose, and 1.26.x works fine in practice. The `numpy<2.0` pin is needed downstream for MMDetection on the ubc_model branch and avoids surprises if you reuse this env across branches.
+
+### `_pickle.UnpicklingError: Weights only load failed` when loading the checkpoint
+
+PyTorch 2.6+ defaults `torch.load` to `weights_only=True`, which rejects checkpoints that contain non-tensor metadata (training history, class mappings). The repo's load functions explicitly pass `weights_only=False`. If you've copied loading code into a fresh script and hit this, add the flag:
+
+```python
+checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+```
+
+Safe because the checkpoints are ones you trained.
 
 ## License
 
